@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Лабиринт комнат — текстуры пола</title>
+<style>
+  body {
+    margin: 0;
+    background: #111;
+    color: #ddd;
+    font-family: sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+  }
+  #game {
+    background: #000;
+    border: 2px solid #444;
+    cursor: pointer;
+  }
+  #info {
+    margin-top: 10px;
+    font-size: 14px;
+    text-align: center;
+    min-height: 20px;
+  }
+  #msg { color: #ff8; margin-left: 10px; }
+  #hint {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #888;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="game" width="800" height="800"></canvas>
+<div id="info">Комната: <span id="pos">2, 2</span><span id="msg"></span></div>
+<div id="hint">Клик по соседней комнате или стрелки на клавиатуре</div>
+
+<script>
+const CANVAS_SIZE = 800;
+const ROOM_SIZE   = 400;
+const MAP_W = 5, MAP_H = 5;
+const T_OPEN = 0.6, T_MOVE = 1.0, T_CLOSE = 0.6;
+const DOOR_WIDTH = 100;
+const DOOR_COLOR = '#8b5a2b';
+const DOOR_LOCKED_COLOR = '#b22222';
+const WALL_COLOR = '#222';
+
+const DIR = {
+  N:{dx:0,dy:-1,opp:'S'}, S:{dx:0,dy:1,opp:'N'},
+  E:{dx:1,dy:0,opp:'W'},  W:{dx:-1,dy:0,opp:'E'},
+};
+const SWING_BY_DIR = {N:+1,S:-1,E:+1,W:-1};
+
+function mulberry32(seed){
+  return function(){
+    seed|=0; seed=seed+0x6D2B79F5|0;
+    let t=Math.imul(seed^seed>>>15,1|seed);
+    t=t+Math.imul(t^t>>>7,61|t)^t;
+    return((t^t>>>14)>>>0)/4294967296;
+  };
+}
+function roomSeed(x,y){return((x*374761393+y*668265263+7)^0x5bd1e995)|0;}
+
+function buildMap(w,h){
+  const rooms=[];
+  for(let y=0;y<h;y++){const row=[];for(let x=0;x<w;x++){
+    row.push({
+      N:y>0?'closed':'wall', S:y<h-1?'closed':'wall',
+      E:x<w-1?'closed':'wall', W:x>0?'closed':'wall',
+    });
+  }rooms.push(row);}
+  return{w,h,rooms};
+}
+const MAP=buildMap(MAP_W,MAP_H);
+
+function doorKey(x,y,dir){
+  const nx=x+DIR[dir].dx, ny=y+DIR[dir].dy;
+  if(y<ny||(y===ny&&x<nx))return`${x},${y},${dir}`;
+  return`${nx},${ny},${DIR[dir].opp}`;
+}
+
+const player={x:2,y:2};
+const visual={offsetX:0,offsetY:0};
+let transition=null;
+
+const canvas=document.getElementById('game');
+const ctx=canvas.getContext('2d');
+const posEl=document.getElementById('pos');
+const msgEl=document.getElementById('msg');
+
+function inBounds(x,y){return x>=0&&y>=0&&x<MAP.w&&y<MAP.h;}
+function easeInOut(t){return t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;}
+
+function roomColor(x,y){
+  const n=(x*73856093)^(y*19349663);
+  const hue=((n%360)+360)%360;
+  return`hsl(${hue}, 35%, 45%)`;
+}
+
+// ============================================================
+// ТЕКСТУРЫ ПОЛА
+// ============================================================
+const patternCache = new Map();
+
+function getRoomPattern(rx, ry) {
+  const key = `${rx},${ry}`;
+  if (patternCache.has(key)) return patternCache.get(key);
+
+  const off = document.createElement('canvas');
+  off.width = ROOM_SIZE;
+  off.height = ROOM_SIZE;
+  const c = off.getContext('2d');
+
+  const rng = mulberry32(roomSeed(rx, ry));
+  const r = () => rng();
+
+  c.strokeStyle = 'rgba(0,0,0,0.15)';
+  c.lineWidth = 1;
+
+  // Выбираем тип текстуры (10 типов)
+  const texType = Math.floor(r() * 10);
+
+  // Параметры, варьирующиеся случайно
+  const step = 25 + Math.floor(r() * 50);   // 25–75 шаг сетки
+  const angle = (r() - 0.5) * Math.PI;       // угол наклона
+  const S = ROOM_SIZE;
+  const margin = S * 1.5; // запас для диагональных линий
+
+  if (texType === 0) {
+    // Прямая сетка (квадратная плитка), но с уникальным шагом
+    for (let i = step; i < S; i += step) {
+      line(c, i, 0, i, S);
+      line(c, 0, i, S, i);
+    }
+
+  } else if (texType === 1) {
+    // Диагональные линии (один набор)
+    const a = 0.3 + r() * 1.0; // угол 17°–74°
+    drawParallels(c, a, step);
+
+  } else if (texType === 2) {
+    // Диагональная сетка (два набора перпендикулярных линий)
+    const a = 0.3 + r() * 0.6;
+    drawParallels(c, a, step);
+    drawParallels(c, a + Math.PI/2, step);
+
+  } else if (texType === 3) {
+    // Кирпичная кладка
+    const brickH = 20 + Math.floor(r() * 25);
+    const brickW = 40 + Math.floor(r() * 50);
+    for (let row = 0; row * brickH < S; row++) {
+      const y = row * brickH;
+      line(c, 0, y, S, y);
+      const offset = (row % 2) * (brickW / 2);
+      for (let x = offset; x < S; x += brickW) {
+        line(c, x, y, x, y + brickH);
+      }
+    }
+
+  } else if (texType === 4) {
+    // Концентрические круги
+    const cx = S/2, cy = S/2;
+    const ringStep = 20 + Math.floor(r() * 35);
+    const maxR = S * 0.8;
+    for (let rad = ringStep; rad < maxR; rad += ringStep) {
+      c.beginPath();
+      c.arc(cx, cy, rad, 0, Math.PI * 2);
+      c.stroke();
+    }
+
+  } else if (texType === 5) {
+    // Ёлочка (herringbone)
+    const segLen = 20 + Math.floor(r() * 20);
+    const segW = segLen;
+    for (let row = -2; row * segLen < S + segLen * 2; row++) {
+      for (let col = -2; col * segW < S + segW * 2; col++) {
+        const bx = col * segW;
+        const by = row * segLen;
+        if ((row + col) % 2 === 0) {
+          line(c, bx, by, bx + segW, by + segLen);
+        } else {
+          line(c, bx + segW, by, bx, by + segLen);
+        }
+      }
+    }
+
+  } else if (texType === 6) {
+    // Гексагональная сетка
+    const hexR = 20 + Math.floor(r() * 25);
+    const hexH = hexR * Math.sqrt(3);
+    const hexW = hexR * 2;
+    for (let row = -1; row * hexH * 0.75 < S + hexH; row++) {
+      for (let col = -1; col * hexW < S + hexW; col++) {
+        const cx = col * hexW * 0.75 + ((row % 2) ? hexW * 0.375 : 0);
+        const cy = row * hexH * 0.5;
+        drawHex(c, cx, cy, hexR);
+      }
+    }
+
+  } else if (texType === 7) {
+    // Волнистые горизонтальные линии
+    const waveAmp = 5 + r() * 15;
+    const waveFreq = 0.01 + r() * 0.03;
+    const phase = r() * Math.PI * 2;
+    const wStep = 25 + Math.floor(r() * 40);
+    for (let y = wStep; y < S; y += wStep) {
+      c.beginPath();
+      for (let x = 0; x <= S; x += 3) {
+        const wy = y + Math.sin(x * waveFreq + phase) * waveAmp;
+        if (x === 0) c.moveTo(x, wy);
+        else c.lineTo(x, wy);
+      }
+      c.stroke();
+    }
+
+  } else if (texType === 8) {
+    // Ромбовидная сетка (два набора диагоналей под разными углами)
+    const a1 = 0.4 + r() * 0.4;
+    const a2 = -(0.4 + r() * 0.4);
+    const step1 = 30 + Math.floor(r() * 30);
+    const step2 = 30 + Math.floor(r() * 30);
+    drawParallels(c, a1, step1);
+    drawParallels(c, a2, step2);
+
+  } else if (texType === 9) {
+    // Дуговая черепица
+    const tileW = 30 + Math.floor(r() * 30);
+    const tileH = 25 + Math.floor(r() * 25);
+    for (let row = -1; row * tileH < S + tileH; row++) {
+      const offset = (row % 2) * (tileW / 2);
+      for (let col = -1; col * tileW < S + tileW; col++) {
+        const ax = col * tileW + offset;
+        const ay = row * tileH + tileH;
+        c.beginPath();
+        c.arc(ax + tileW/2, ay, tileW/2, Math.PI, Math.PI * 2);
+        c.stroke();
+      }
+    }
+  }
+
+  patternCache.set(key, off);
+  return off;
+}
+
+// Вспомогательные функции для генерации текстур
+function line(c, x1, y1, x2, y2) {
+  c.beginPath();
+  c.moveTo(x1, y1);
+  c.lineTo(x2, y2);
+  c.stroke();
+}
+
+function drawParallels(c, angle, step) {
+  const S = ROOM_SIZE;
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  // Направление линии
+  const dx = cos, dy = sin;
+  // Нормаль (перпендикуляр)
+  const nx = -sin, ny = cos;
+
+  // Максимальное расстояние от центра по нормали
+  const maxDist = S * 1.2;
+
+  for (let d = -maxDist; d < maxDist; d += step) {
+    // Точка на нормали
+    const px = S/2 + nx * d;
+    const py = S/2 + ny * d;
+    // Линия через эту точку в направлении angle
+    const len = S * 1.5;
+    const x1 = px - dx * len;
+    const y1 = py - dy * len;
+    const x2 = px + dx * len;
+    const y2 = py + dy * len;
+    line(c, x1, y1, x2, y2);
+  }
+}
+
+function drawHex(c, cx, cy, r) {
+  c.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 - Math.PI / 6;
+    const x = cx + Math.cos(a) * r;
+    const y = cy + Math.sin(a) * r;
+    if (i === 0) c.moveTo(x, y);
+    else c.lineTo(x, y);
+  }
+  c.closePath();
+  c.stroke();
+}
+
+// ============================================================
+// РЕНДЕРИНГ
+// ============================================================
+function render() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+  const visible = [];
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const rx = player.x + dx, ry = player.y + dy;
+      if (!inBounds(rx, ry)) continue;
+      const dist = Math.abs(dx) + Math.abs(dy);
+      visible.push({
+        rx, ry,
+        sx: CANVAS_SIZE/2 + dx * ROOM_SIZE - visual.offsetX,
+        sy: CANVAS_SIZE/2 + dy * ROOM_SIZE - visual.offsetY,
+        alpha: dist === 0 ? 1 : (dist === 1 ? 0.75 : 0.4),
+      });
+    }
+  }
+
+  for (const r of visible) drawRoomFloor(r);
+  for (const r of visible) drawWalls(r);
+
+  const doors = new Map();
+  for (const r of visible) collectDoors(r, doors);
+  for (const d of doors.values()) drawDoorLeaf(d);
+
+  drawFog();
+
+  ctx.fillStyle = '#fff';
+  ctx.shadowColor = 'rgba(255,255,255,0.6)';
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.arc(CANVAS_SIZE/2, CANVAS_SIZE/2, 6, 0, Math.PI*2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+function drawRoomFloor({rx, ry, sx, sy, alpha}) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const half = ROOM_SIZE / 2;
+  const x0 = sx - half, y0 = sy - half;
+
+  ctx.fillStyle = roomColor(rx, ry);
+  ctx.fillRect(x0, y0, ROOM_SIZE, ROOM_SIZE);
+
+  // Обрезаем текстуру по границам комнаты
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x0, y0, ROOM_SIZE, ROOM_SIZE);
+  ctx.clip();
+  ctx.drawImage(getRoomPattern(rx, ry), x0, y0);
+  ctx.restore();
+
+  ctx.restore();
+}
+
+function drawWalls({rx, ry, sx, sy, alpha}) {
+  const half = ROOM_SIZE/2;
+  const x0 = sx - half, y0 = sy - half;
+  for (const side of ['N','S','E','W']) {
+    const dt = MAP.rooms[ry][rx][side];
+    const seg = sideSegment(x0, y0, side);
+    if (dt === 'wall') {
+      strokeLine(seg[0],seg[1],seg[2],seg[3], WALL_COLOR, 4, alpha);
+      continue;
+    }
+    const op = openingPoints(seg[0],seg[1],seg[2],seg[3]);
+    strokeLine(seg[0],seg[1],op.p1x,op.p1y, WALL_COLOR, 4, 1);
+    strokeLine(op.p2x,op.p2y,seg[2],seg[3], WALL_COLOR, 4, 1);
+  }
+}
+
+function sideSegment(x0, y0, side) {
+  switch(side) {
+    case 'N': return [x0, y0, x0+ROOM_SIZE, y0];
+    case 'S': return [x0, y0+ROOM_SIZE, x0+ROOM_SIZE, y0+ROOM_SIZE];
+    case 'E': return [x0+ROOM_SIZE, y0, x0+ROOM_SIZE, y0+ROOM_SIZE];
+    case 'W': return [x0, y0, x0, y0+ROOM_SIZE];
+  }
+}
+
+function openingPoints(ax,ay,bx,by) {
+  const mx=(ax+bx)/2, my=(ay+by)/2;
+  const len=Math.hypot(bx-ax,by-ay);
+  const ux=(bx-ax)/len, uy=(by-ay)/len;
+  return {p1x:mx-ux*DOOR_WIDTH/2,p1y:my-uy*DOOR_WIDTH/2,p2x:mx+ux*DOOR_WIDTH/2,p2y:my
+
++uy*DOOR_WIDTH/2};
+}
+
+function collectDoors({rx,ry,sx,sy}, doors) {
+  const half=ROOM_SIZE/2, x0=sx-half, y0=sy-half;
+  for (const side of ['N','S','E','W']) {
+    const dt = MAP.rooms[ry][rx][side];
+    if (dt==='wall') continue;
+    const key = doorKey(rx,ry,side);
+    if (doors.has(key)) continue;
+    const seg = sideSegment(x0,y0,side);
+    doors.set(key, {key, doorType:dt, ...openingPoints(seg[0],seg[1],seg[2],seg[3])});
+  }
+}
+
+function drawDoorLeaf(d) {
+  let angle=0, swing=1;
+  if (transition && transition.doorKey===d.key) {
+    angle=transition.doorAngle; swing=transition.swingDir;
+  }
+  const px=d.p1x, py=d.p1y;
+  const rad=angle*Math.PI/180*swing;
+  const vx=d.p2x-px, vy=d.p2y-py;
+  const co=Math.cos(rad), si=Math.sin(rad);
+  const hx=px+vx*co-vy*si, hy=py+vx*si+vy*co;
+  const color = d.doorType==='locked'?DOOR_LOCKED_COLOR:DOOR_COLOR;
+
+  ctx.save();
+  ctx.globalAlpha=1;
+  ctx.strokeStyle=color; ctx.lineWidth=8; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(hx,hy); ctx.stroke();
+  ctx.fillStyle=color;
+  ctx.beginPath(); ctx.arc(hx,hy,5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#000';
+  ctx.beginPath(); ctx.arc(px,py,3,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function strokeLine(ax,ay,bx,by,color,width,alpha) {
+  ctx.save(); ctx.globalAlpha=alpha;
+  ctx.strokeStyle=color; ctx.lineWidth=width;
+  ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(bx,by); ctx.stroke();
+  ctx.restore();
+}
+
+function drawFog() {
+  const grad=ctx.createRadialGradient
+
+(CANVAS_SIZE/2,CANVAS_SIZE/2,ROOM_SIZE*0.4,CANVAS_SIZE/2,CANVAS_SIZE/2,CANVAS_SIZE*0.7);
+  grad.addColorStop(0,'rgba(0,0,0,0)');
+  grad.addColorStop(0.6,'rgba(0,0,0,0.4)');
+  grad.addColorStop(1,'rgba(0,0,0,0.95)');
+  ctx.fillStyle=grad;
+  ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE);
+}
+
+// ============================================================
+// ПЕРЕХОДЫ
+// ============================================================
+function startTransition(dir) {
+  if (transition) return;
+  const dt = MAP.rooms[player.y][player.x][dir];
+  if (dt==='wall'){flashMessage('Там стена');return;}
+  if (dt==='locked'){flashMessage('Дверь заперта');return;}
+  transition={phase:'opening',dir,doorKey:doorKey(player.x,player.y,dir),swingDir:SWING_BY_DIR
+
+[dir],doorAngle:0,progress:0};
+}
+
+function updateTransition(dt) {
+  if (!transition) return;
+  transition.progress += dt;
+  if (transition.phase==='opening') {
+    const t=Math.min(transition.progress/T_OPEN,1);
+    transition.doorAngle=easeInOut(t)*90;
+    if (t>=1){transition.phase='moving';transition.progress=0;transition.doorAngle=90;}
+  } else if (transition.phase==='moving') {
+    const t=Math.min(transition.progress/T_MOVE,1);
+    const e=easeInOut(t);
+    visual.offsetX=DIR[transition.dir].dx*ROOM_SIZE*e;
+    visual.offsetY=DIR[transition.dir].dy*ROOM_SIZE*e;
+    if (t>=1){
+      player.x+=DIR[transition.dir].dx;player.y+=DIR[transition.dir].dy;
+      visual.offsetX=0;visual.offsetY=0;
+      transition.phase='closing';transition.progress=0;transition.doorAngle=90;
+      posEl.textContent=`${player.x}, ${player.y}`;
+    }
+  } else if (transition.phase==='closing') {
+    const t=Math.min(transition.progress/T_CLOSE,1);
+    transition.doorAngle=(1-easeInOut(t))*90;
+    if (t>=1) transition=null;
+  }
+}
+
+canvas.addEventListener('click',(e)=>{
+  if (transition) return;
+  const rect=canvas.getBoundingClientRect();
+  const mx=(e.clientX-rect.left)*(canvas.width/rect.width);
+  const my=(e.clientY-rect.top)*(canvas.height/rect.height);
+  const dx=Math.round((mx-CANVAS_SIZE/2)/ROOM_SIZE);
+  const dy=Math.round((my-CANVAS_SIZE/2)/ROOM_SIZE);
+  if (Math.abs(dx)+Math.abs(dy)!==1) return;
+  const dir=Object.keys(DIR).find(d=>DIR[d].dx===dx&&DIR[d].dy===dy);
+  if (dir) startTransition(dir);
+});
+
+document.addEventListener('keydown',(e)=>{
+  const km={ArrowUp:'N',ArrowDown:'S',ArrowRight:'E',ArrowLeft:'W'};
+  const dir=km[e.key]; if(!dir)return; e.preventDefault();
+  if(transition)return; startTransition(dir);
+});
+
+let messageTimer=null;
+function flashMessage(text){
+  msgEl.textContent=text;
+  clearTimeout(messageTimer);
+  messageTimer=setTimeout(()=>{msgEl.textContent='';},1500);
+}
+
+let lastTime=performance.now();
+function loop(now){
+  const dt=Math.min((now-lastTime)/1000,0.1); lastTime=now;
+  updateTransition(dt); render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+
+</body>
+</html>
