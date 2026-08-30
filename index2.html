@@ -2,13 +2,18 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<title>Лабиринт комнат — v6 (монстры)</title>
+<title>Лабиринт комнат — v7 (чутьё монстров)</title>
 <style>
   body { margin:0; background:#111; color:#ddd; font-family:sans-serif;
          display:flex; flex-direction:column; align-items:center; padding:20px; }
   #game { background:#000; border:2px solid #444; cursor:pointer; }
   #info { margin-top:10px; font-size:14px; text-align:center; min-height:20px; }
   #msg  { color:#ff8; margin-left:12px; }
+  #bar  { margin-top:8px; display:flex; gap:10px; align-items:center; }
+  button { background:#222; color:#ccc; border:1px solid #555; border-radius:4px;
+           padding:5px 12px; font-size:12px; cursor:pointer; font-family:inherit; }
+  button:hover { background:#2e2e2e; color:#fff; }
+  button.on { background:#2b4a2b; border-color:#5a5; color:#cfc; }
   #hint { margin-top:6px; font-size:12px; color:#888; }
 </style>
 </head>
@@ -16,7 +21,11 @@
 
 <canvas id="game" width="800" height="800"></canvas>
 <div id="info">Комната: <span id="pos">2, 2</span> &nbsp;|&nbsp; Пойман: <span id="caught">0</span><span id="msg"></span></div>
-<div id="hint">Стрелки или клик по соседней комнате &nbsp;·&nbsp; D — отладка ИИ</div>
+<div id="bar">
+  <button id="dbgBtn">Отладка ИИ (D)</button>
+  <button id="resetBtn">Сброс монстров (R)</button>
+</div>
+<div id="hint">Стрелки или клик по соседней комнате</div>
 
 <script>
 'use strict';
@@ -25,12 +34,12 @@
 // 1. НАСТРОЙКИ
 // ============================================================
 const CANVAS_SIZE = 800;
-const ROOM_SIZE   = 250;            // 3 комнаты = 750 < 800
+const ROOM_SIZE   = 250;
 const MAP_W = 5, MAP_H = 5;
 
-const T_OPEN  = 0.6;                // сек на распахивание двери на 90°
-const T_CLOSE = 0.6;                // сек на закрывание
-const T_MOVE  = 0.9;                // сек на проход комнаты
+const T_OPEN  = 0.6;
+const T_CLOSE = 0.6;
+const T_MOVE  = 0.9;
 
 const DOOR_WIDTH = 64;
 const DOOR_COLOR = '#8b5a2b';
@@ -41,7 +50,6 @@ const DIR = {
   N:{dx:0,dy:-1,opp:'S'}, S:{dx:0,dy:1,opp:'N'},
   E:{dx:1,dy:0,opp:'W'},  W:{dx:-1,dy:0,opp:'E'},
 };
-// Знак распахивания: створка уходит ВНУТРЬ покидаемой комнаты
 const SWING_BY_DIR = {N:+1, S:-1, E:+1, W:-1};
 
 const TAU = Math.PI*2;
@@ -61,9 +69,9 @@ function mulberry32(seed){
 function roomSeed(x,y){ return ((x*374761393 + y*668265263 + 7) ^ 0x5bd1e995)|0; }
 function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
 function easeInOut(t){ return t<0.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2; }
-function approach(cur, target, maxStep){
-  const d = target-cur;
-  if (Math.abs(d) <= maxStep) return target;
+function approach(cur,target,maxStep){
+  const d=target-cur;
+  if (Math.abs(d)<=maxStep) return target;
   return cur + Math.sign(d)*maxStep;
 }
 
@@ -90,64 +98,60 @@ const MAP = buildMap(MAP_W, MAP_H);
 function inBounds(x,y){ return x>=0 && y>=0 && x<MAP.w && y<MAP.h; }
 function sideType(x,y,dir){ return MAP.rooms[y][x][dir]; }
 
-/** Канонический ключ двери. dir в ключе всегда 'E' или 'S'. */
 function doorKey(x,y,dir){
   const nx=x+DIR[dir].dx, ny=y+DIR[dir].dy;
   if (y<ny || (y===ny && x<nx)) return `${x},${y},${dir}`;
   return `${nx},${ny},${DIR[dir].opp}`;
 }
 function parseDoorKey(key){
-  const [x,y,dir] = key.split(',');
-  return { x:+x, y:+y, dir };
+  const [x,y,dir]=key.split(',');
+  return {x:+x, y:+y, dir};
 }
 function doorTypeByKey(key){
-  const k = parseDoorKey(key);
+  const k=parseDoorKey(key);
   return MAP.rooms[k.y][k.x][k.dir];
 }
 
 // ============================================================
 // 4. МИРОВЫЕ КООРДИНАТЫ И КАМЕРА
 // ============================================================
-// Центр комнаты (rx,ry) в мире = (rx*ROOM_SIZE, ry*ROOM_SIZE)
-let camX = 0, camY = 0;
+let camX=0, camY=0;
 
 function roomCX(rx){ return rx*ROOM_SIZE; }
 function roomCY(ry){ return ry*ROOM_SIZE; }
 function sx(wx){ return wx - camX + CANVAS_SIZE/2; }
 function sy(wy){ return wy - camY + CANVAS_SIZE/2; }
 
-/** Геометрия дверного проёма в мировых координатах. p1 — петля. */
 function doorGeom(key){
-  const k = parseDoorKey(key);
-  const cx = roomCX(k.x), cy = roomCY(k.y);
-  if (k.dir === 'E'){
-    const wx = cx + ROOM_SIZE/2;
-    return { p1x:wx, p1y:cy-DOOR_WIDTH/2, p2x:wx, p2y:cy+DOOR_WIDTH/2, mx:wx, my:cy };
-  } else { // 'S'
-    const wy = cy + ROOM_SIZE/2;
-    return { p1x:cx-DOOR_WIDTH/2, p1y:wy, p2x:cx+DOOR_WIDTH/2, p2y:wy, mx:cx, my:wy };
+  const k=parseDoorKey(key);
+  const cx=roomCX(k.x), cy=roomCY(k.y);
+  if (k.dir==='E'){
+    const wx=cx+ROOM_SIZE/2;
+    return {p1x:wx, p1y:cy-DOOR_WIDTH/2, p2x:wx, p2y:cy+DOOR_WIDTH/2, mx:wx, my:cy};
   }
+  const wy=cy+ROOM_SIZE/2;
+  return {p1x:cx-DOOR_WIDTH/2, p1y:wy, p2x:cx+DOOR_WIDTH/2, p2y:wy, mx:cx, my:wy};
 }
-/** Центр двери со стороны комнаты (rx,ry) в направлении dir. */
 function doorCenter(rx,ry,dir){
-  return { x: roomCX(rx) + DIR[dir].dx*ROOM_SIZE/2,
-           y: roomCY(ry) + DIR[dir].dy*ROOM_SIZE/2 };
+  return { x: roomCX(rx)+DIR[dir].dx*ROOM_SIZE/2,
+           y: roomCY(ry)+DIR[dir].dy*ROOM_SIZE/2 };
+}
+function clampToRoom(pt, room, margin){
+  const cx=roomCX(room.x), cy=roomCY(room.y), h=ROOM_SIZE/2-margin;
+  return { x: clamp(pt.x, cx-h, cx+h), y: clamp(pt.y, cy-h, cy+h) };
 }
 
 // ============================================================
-// 5. МЕНЕДЖЕР ДВЕРЕЙ (независимые анимации)
+// 5. МЕНЕДЖЕР ДВЕРЕЙ
 // ============================================================
-// anim = { key, angle (знаковый, -90..90), target, users:Set }
 const doorAnims = new Map();
 
 function requestDoorOpen(key, sign, user){
-  let a = doorAnims.get(key);
+  let a=doorAnims.get(key);
   if (!a){
-    a = { key, angle:0, target:sign*90, users:new Set() };
-    doorAnims.set(key, a);
-  } else if (Math.abs(a.angle) > 1) {
-    // Створка уже отклонена — не разворачиваем её на 180°,
-    // а доталкиваем в ту же сторону (дверь двусторонняя).
+    a={key, angle:0, target:sign*90, users:new Set()};
+    doorAnims.set(key,a);
+  } else if (Math.abs(a.angle)>1){
     a.target = Math.sign(a.angle)*90;
   } else {
     a.target = sign*90;
@@ -155,74 +159,76 @@ function requestDoorOpen(key, sign, user){
   a.users.add(user);
   return a;
 }
-function releaseDoor(key, user){
-  const a = doorAnims.get(key);
+function releaseDoor(key,user){
+  const a=doorAnims.get(key);
   if (!a) return;
   a.users.delete(user);
-  if (a.users.size === 0) a.target = 0;
+  if (a.users.size===0) a.target=0;
 }
-/** Дверь распахнута достаточно, чтобы пройти (в любую сторону). */
 function doorPassable(key){
-  const a = doorAnims.get(key);
-  return !!a && Math.abs(a.angle) >= 88;
+  const a=doorAnims.get(key);
+  return !!a && Math.abs(a.angle)>=88;
 }
-/** Дверь шевелится / открыта — её видно как «незакрывшуюся». */
-function doorActive(key){ return doorAnims.has(key); }
-
 function updateDoors(dt){
   for (const a of [...doorAnims.values()]){
-    const speed = (a.target === 0 ? 90/T_CLOSE : 90/T_OPEN);
+    const speed = (a.target===0 ? 90/T_CLOSE : 90/T_OPEN);
     a.angle = approach(a.angle, a.target, speed*dt);
-    if (a.angle === 0 && a.target === 0 && a.users.size === 0){
-      doorAnims.delete(a.key);
-    }
+    if (a.angle===0 && a.target===0 && a.users.size===0) doorAnims.delete(a.key);
   }
 }
 
 // ============================================================
 // 6. ИГРОК
 // ============================================================
-const player = { x:2, y:2 };
-const visual = { offsetX:0, offsetY:0 };
-let move = null;   // { dir, key, phase:'opening'|'moving', progress }
+const player = {x:2, y:2};
+const visual = {offsetX:0, offsetY:0};
+let move = null;
 
 function startMove(dir){
-  if (move) return;                       // идём — новый ход только по прибытии
+  if (move) return;
   const t = sideType(player.x, player.y, dir);
-  if (t === 'wall'){ flashMessage('Там стена'); return; }
-  if (t === 'locked'){ flashMessage('Дверь заперта'); return; }
+  if (t==='wall'){ flashMessage('Там стена'); return; }
+  if (t==='locked'){ flashMessage('Дверь заперта'); return; }
 
   const key = doorKey(player.x, player.y, dir);
   requestDoorOpen(key, SWING_BY_DIR[dir], 'player');
-  move = { dir, key, phase:'opening', progress:0 };
+  move = {dir, key, phase:'opening', progress:0};
 }
 
 function updatePlayer(dt){
   if (!move) return;
 
-  if (move.phase === 'opening'){
-    if (doorPassable(move.key)){ move.phase = 'moving'; move.progress = 0; }
+  if (move.phase==='opening'){
+    if (doorPassable(move.key)){ move.phase='moving'; move.progress=0; }
     return;
   }
-  // moving
   move.progress += dt;
-  const t = Math.min(move.progress / T_MOVE, 1);
+  const t = Math.min(move.progress/T_MOVE, 1);
   const e = easeInOut(t);
-  visual.offsetX = DIR[move.dir].dx * ROOM_SIZE * e;
-  visual.offsetY = DIR[move.dir].dy * ROOM_SIZE * e;
+  visual.offsetX = DIR[move.dir].dx*ROOM_SIZE*e;
+  visual.offsetY = DIR[move.dir].dy*ROOM_SIZE*e;
 
-  if (t >= 1){
+  if (t>=1){
     player.x += DIR[move.dir].dx;
     player.y += DIR[move.dir].dy;
-    visual.offsetX = 0; visual.offsetY = 0;
-    releaseDoor(move.key, 'player');      // дверь закрывается сама, ход не блокируется
-    move = null;
+    visual.offsetX=0; visual.offsetY=0;
+    releaseDoor(move.key,'player');
+    move=null;
     posEl.textContent = `${player.x}, ${player.y}`;
-    onPlayerArrive();
   }
 }
 
-function playerWorld(){ return { x:camX, y:camY }; }   // игрок всегда в центре экрана
+function playerWorld(){ return {x:camX, y:camY}; }
+
+/** Комната, в которой игрок считается находящимся с точки зрения ИИ:
+ *  ближайшая по камере. Пока игрок не перешёл середину проёма — это
+ *  комната-источник, после — комната-приёмник. */
+function playerRoomForAI(){
+  return {
+    x: clamp(Math.round(camX/ROOM_SIZE), 0, MAP.w-1),
+    y: clamp(Math.round(camY/ROOM_SIZE), 0, MAP.h-1),
+  };
+}
 
 // ============================================================
 // 7. МОНСТРЫ
@@ -231,7 +237,7 @@ const MONSTER_TYPES = {
   monster1: {
     id:'monster1',
     title:'Ползун',
-    chaseSpeed: 85,          // px/с при погоне (игрок ~167 px/с)
+    chaseSpeed: 85,
     wanderSpeed: 32,
     size: 13,
     bodyColor:'#5a1f1f',
@@ -239,10 +245,10 @@ const MONSTER_TYPES = {
     legColor:'#3a1414',
     eyeColor:'#ffd24a',
     auraColor:'rgba(200,40,40,',
-    // Органы чувств
-    sightAdjacent: true,     // видит игрока в ортогонально соседней комнате
-    sightNeedsPassage: true, // ...только если между комнатами есть проём, а не глухая стена
-    noticeDoors: true,       // входя в комнату, замечает незакрывшуюся дверь
+    sightAdjacent: true,      // чует в ортогонально соседней комнате
+    sightNeedsPassage: true,  // ...только сквозь проём, не сквозь глухую стену
+    sightDiagonal: false,     // по диагонали не чует
+    noticeDoors: true,        // читает след по незакрывшейся двери
     canOpenDoors: true,
     canOpenLocked: false,
     catchRadius: 20,
@@ -252,6 +258,7 @@ const MONSTER_TYPES = {
 
 const monsters = [];
 let caughtCount = 0;
+const SPAWNS = [ ['monster1',0,0], ['monster1',4,3] ];
 
 function spawnMonster(typeId, rx, ry){
   const cfg = MONSTER_TYPES[typeId];
@@ -261,48 +268,63 @@ function spawnMonster(typeId, rx, ry){
     room:{x:rx,y:ry},
     x: roomCX(rx), y: roomCY(ry),
     facing: 0,
-    state: 'idle',            // 'idle' | 'chase'
+    state: 'idle',        // 'idle' | 'chase'
+    reason: '',           // 'sight' | 'trail' — для отладки
     targetRoom: null,
-    cross: null,              // переход через дверь
+    cross: null,
+    ignoreDoorKey: null,  // дверь, через которую только что вошёл
     wanderTarget: null,
     wanderWait: 0,
     alert: 0,
-    stun: 0,                  // пауза после поимки
+    alertMark: '!',
+    stun: 0,
     moving: 0,
   };
   monsters.push(m);
   return m;
 }
-
-/** Можно ли монстру пройти из комнаты в сторону dir. */
-function monsterCanPass(m, rx, ry, dir){
-  const t = sideType(rx, ry, dir);
-  if (t === 'wall') return false;
-  if (t === 'locked' && !m.cfg.canOpenLocked) return false;
-  return true;
+function resetMonsters(){
+  monsters.length = 0;
+  for (const [t,x,y] of SPAWNS) spawnMonster(t,x,y);
+  for (const a of [...doorAnims.values()]){
+    for (const u of [...a.users]) if (u!=='player') a.users.delete(u);
+    if (a.users.size===0) a.target=0;
+  }
 }
 
-/** Первый шаг кратчайшего пути (BFS по графу комнат). */
+function monsterCanPass(m, rx, ry, dir){
+  const t = sideType(rx,ry,dir);
+  if (t==='wall') return false;
+  if (t==='locked' && !m.cfg.canOpenLocked) return false;
+  return true;
+}
+function isOrthAdjacent(a,b){ return Math.abs(a.x-b.x)+Math.abs(a.y-b.y)===1; }
+function dirBetween(from,to){
+  for (const d of ['N','S','E','W'])
+    if (from.x+DIR[d].dx===to.x && from.y+DIR[d].dy===to.y) return d;
+  return null;
+}
+
 function bfsNextDir(m, from, to){
   if (from.x===to.x && from.y===to.y) return null;
-  const idx = (x,y)=> y*MAP.w + x;
-  const prev = new Map();
-  const seen = new Set([idx(from.x,from.y)]);
-  const q = [{x:from.x,y:from.y}];
-  while (q.length){
-    const cur = q.shift();
+  const idx=(x,y)=>y*MAP.w+x;
+  const prev=new Map();
+  const seen=new Set([idx(from.x,from.y)]);
+  const q=[{x:from.x,y:from.y}];
+  while(q.length){
+    const cur=q.shift();
     for (const d of ['N','S','E','W']){
-      if (!monsterCanPass(m, cur.x, cur.y, d)) continue;
-      const nx = cur.x+DIR[d].dx, ny = cur.y+DIR[d].dy;
+      if (!monsterCanPass(m,cur.x,cur.y,d)) continue;
+      const nx=cur.x+DIR[d].dx, ny=cur.y+DIR[d].dy;
       if (!inBounds(nx,ny)) continue;
-      const k = idx(nx,ny);
+      const k=idx(nx,ny);
       if (seen.has(k)) continue;
       seen.add(k);
-      prev.set(k, {x:cur.x, y:cur.y, d});
+      prev.set(k,{x:cur.x,y:cur.y,d});
       if (nx===to.x && ny===to.y){
         let cx=nx, cy=ny;
         for(;;){
-          const p = prev.get(idx(cx,cy));
+          const p=prev.get(idx(cx,cy));
           if (p.x===from.x && p.y===from.y) return p.d;
           cx=p.x; cy=p.y;
         }
@@ -313,193 +335,204 @@ function bfsNextDir(m, from, to){
   return null;
 }
 
-function isOrthAdjacent(a,b){
-  return Math.abs(a.x-b.x) + Math.abs(a.y-b.y) === 1;
-}
-function dirBetween(from,to){
-  for (const d of ['N','S','E','W'])
-    if (from.x+DIR[d].dx===to.x && from.y+DIR[d].dy===to.y) return d;
-  return null;
+function setChase(m, room, reason, mark){
+  if (m.state!=='chase'){ m.alert=1.4; m.alertMark=mark; }
+  m.state='chase';
+  m.reason=reason;
+  m.targetRoom={x:room.x, y:room.y};
+  m.wanderTarget=null;
+  m.wanderWait=0;
 }
 
-/** Событие: игрок дошёл до центра комнаты — монстры могут его заметить. */
-function onPlayerArrive(){
-  for (const m of monsters){
-    if (m.stun > 0) continue;
-    const cfg = m.cfg;
-    if (!cfg.sightAdjacent) continue;
-    if (!isOrthAdjacent(m.room, player)) continue;      // по диагонали не видит
-    if (cfg.sightNeedsPassage){
-      const d = dirBetween(m.room, player);
-      if (!monsterCanPass(m, m.room.x, m.room.y, d)) continue;
-    }
-    m.targetRoom = { x:player.x, y:player.y };
-    m.state = 'chase';
-    m.alert = 1.4;
-    m.wanderTarget = null;
-    m.wanderWait = 0;
+/** ОРГАНЫ ЧУВСТВ. Опрашиваются каждый кадр, а не по событию прихода игрока. */
+function updateMonsterSenses(m){
+  if (m.stun>0) return;
+  const cfg=m.cfg;
+  const pr=playerRoomForAI();
+
+  // Та же комната — чует всегда
+  if (pr.x===m.room.x && pr.y===m.room.y){
+    setChase(m, pr, 'sight', '!');
+    return true;
   }
+  // Ортогонально соседняя комната + проход между ними
+  if (cfg.sightAdjacent && isOrthAdjacent(m.room, pr)){
+    const d=dirBetween(m.room, pr);
+    if (!cfg.sightNeedsPassage || monsterCanPass(m, m.room.x, m.room.y, d)){
+      setChase(m, pr, 'sight', '!');
+      return true;
+    }
+  }
+  // Диагональ и глухая стена — не чует. Старая цель (след) сохраняется.
+  return false;
 }
 
-/** Монстр вошёл в комнату: осматривается. */
-function onMonsterEnterRoom(m, cameFromKey){
+/** Монстр вошёл в комнату: ищет самую «свежую» незакрывшуюся дверь. */
+function onMonsterEnterRoom(m){
   if (!m.cfg.noticeDoors) return;
+  let best=null, bestAngle=0;
   for (const d of ['N','S','E','W']){
     if (!monsterCanPass(m, m.room.x, m.room.y, d)) continue;
-    const key = doorKey(m.room.x, m.room.y, d);
-    if (key === cameFromKey) continue;
-    const a = doorAnims.get(key);
-    if (!a) continue;                    // дверь давно закрыта — следа нет
-    if (a.users.has(m)) continue;        // свою дверь не считаем
-    // Дверь ещё не закрылась → кто-то только что ушёл туда
-    m.targetRoom = { x:m.room.x+DIR[d].dx, y:m.room.y+DIR[d].dy };
-    m.state = 'chase';
-    m.alert = Math.max(m.alert, 1.0);
-    return;
+    const key=doorKey(m.room.x, m.room.y, d);
+    if (key===m.ignoreDoorKey) continue;
+    const a=doorAnims.get(key);
+    if (!a || a.users.has(m)) continue;
+    const abs=Math.abs(a.angle);
+    if (abs>bestAngle){ bestAngle=abs; best=d; }
+  }
+  if (best){
+    setChase(m, {x:m.room.x+DIR[best].dx, y:m.room.y+DIR[best].dy}, 'trail', '?');
   }
 }
 
 function moveToward(m, tx, ty, speed, dt){
-  const dx = tx-m.x, dy = ty-m.y;
-  const dist = Math.hypot(dx,dy);
-  if (dist < 0.5){ m.moving = 0; return true; }
-  const step = Math.min(speed*dt, dist);
+  const dx=tx-m.x, dy=ty-m.y;
+  const dist=Math.hypot(dx,dy);
+  if (dist<0.5){ m.moving=0; return true; }
+  const step=Math.min(speed*dt, dist);
   m.x += dx/dist*step;
   m.y += dy/dist*step;
-  m.moving = speed;
-  // плавный разворот «морды»
-  const want = Math.atan2(dy,dx);
-  let diff = want - m.facing;
-  while (diff >  Math.PI) diff -= TAU;
-  while (diff < -Math.PI) diff += TAU;
-  m.facing += diff * Math.min(1, dt*8);
-  return step >= dist;
+  m.moving=speed;
+  const want=Math.atan2(dy,dx);
+  let diff=want-m.facing;
+  while(diff> Math.PI) diff-=TAU;
+  while(diff<-Math.PI) diff+=TAU;
+  m.facing += diff*Math.min(1, dt*8);
+  return step>=dist;
 }
 
 function updateMonster(m, dt){
-  const cfg = m.cfg;
-  if (m.alert > 0) m.alert -= dt;
-  if (m.stun  > 0){ m.stun -= dt; m.moving = 0; return; }
+  const cfg=m.cfg;
+  if (m.alert>0) m.alert-=dt;
+  if (m.stun>0){ m.stun-=dt; m.moving=0; return; }
+
+  // Чутьё работает постоянно, в том числе во время перехода между комнатами
+  updateMonsterSenses(m);
 
   // --- переход через дверь ---
   if (m.cross){
-    const cr = m.cross;
-    const dc = doorCenter(cr.from.x, cr.from.y, cr.dir);
+    const cr=m.cross;
+    const dc=doorCenter(cr.from.x, cr.from.y, cr.dir);
 
-    if (cr.stage === 'approach'){
-      const dist = Math.hypot(dc.x-m.x, dc.y-m.y);
-      if (cfg.canOpenDoors && dist < ROOM_SIZE*0.45 && !cr.requested){
+    // Передумал: цель — та комната, из которой выходим, и порог ещё не пройден
+    if (!cr.entered && m.targetRoom &&
+        m.targetRoom.x===cr.from.x && m.targetRoom.y===cr.from.y){
+      releaseDoor(cr.key, m);
+      m.cross=null;
+      return;
+    }
+
+    if (cr.stage==='approach'){
+      const dist=Math.hypot(dc.x-m.x, dc.y-m.y);
+      if (cfg.canOpenDoors && dist<ROOM_SIZE*0.45 && !cr.requested){
         requestDoorOpen(cr.key, SWING_BY_DIR[cr.dir], m);
-        cr.requested = true;
+        cr.requested=true;
       }
-      const arrived = moveToward(m, dc.x, dc.y, cfg.chaseSpeed, dt);
-      if (arrived){
-        if (doorPassable(cr.key)) cr.stage = 'pass';
-        else m.moving = 0;                 // ждём, пока створка распахнётся
+      if (moveToward(m, dc.x, dc.y, cfg.chaseSpeed, dt)){
+        if (doorPassable(cr.key)) cr.stage='pass';
+        else m.moving=0;                 // ждёт, пока створка распахнётся
       }
       return;
     }
 
-    // stage === 'pass'
-    const ex = dc.x + DIR[cr.dir].dx*ROOM_SIZE*0.42;
-    const ey = dc.y + DIR[cr.dir].dy*ROOM_SIZE*0.42;
-    const done = moveToward(m, ex, ey, cfg.chaseSpeed, dt);
+    const ex=dc.x+DIR[cr.dir].dx*ROOM_SIZE*0.42;
+    const ey=dc.y+DIR[cr.dir].dy*ROOM_SIZE*0.42;
+    const done=moveToward(m, ex, ey, cfg.chaseSpeed, dt);
 
     if (!cr.entered){
-      const axisSgn = DIR[cr.dir].dx + DIR[cr.dir].dy;
-      const along = (DIR[cr.dir].dx !== 0) ? (m.x-dc.x) : (m.y-dc.y);
-      if (along*axisSgn > 0){
-        cr.entered = true;
-        m.room = { x:cr.to.x, y:cr.to.y };
-        onMonsterEnterRoom(m, cr.key);
+      const axisSgn=DIR[cr.dir].dx+DIR[cr.dir].dy;
+      const along=(DIR[cr.dir].dx!==0) ? (m.x-dc.x) : (m.y-dc.y);
+      if (along*axisSgn>0){
+        cr.entered=true;
+        m.room={x:cr.to.x, y:cr.to.y};
+        m.ignoreDoorKey=cr.key;
+        if (!updateMonsterSenses(m)) onMonsterEnterRoom(m);
       }
     }
-    if (done){
-      releaseDoor(cr.key, m);
-      m.cross = null;
-    }
+    if (done){ releaseDoor(cr.key, m); m.cross=null; }
     return;
   }
 
-  // --- игрок в той же комнате: идём прямо на него ---
-  const inSameRoom = (player.x===m.room.x && player.y===m.room.y && !move) ||
-                     (move && player.x===m.room.x && player.y===m.room.y);
-  if (inSameRoom){
-    const p = playerWorld();
-    moveToward(m, p.x, p.y, cfg.chaseSpeed, dt);
-    m.state = 'chase';
-    m.targetRoom = {x:m.room.x, y:m.room.y};
+  const pr=playerRoomForAI();
+
+  // --- игрок в этой же комнате: прямое преследование ---
+  if (pr.x===m.room.x && pr.y===m.room.y){
+    const p=playerWorld();
+    const t=clampToRoom(p, m.room, 14);   // не даём выйти за стены комнаты
+    moveToward(m, t.x, t.y, cfg.chaseSpeed, dt);
     if (Math.hypot(p.x-m.x, p.y-m.y) < cfg.catchRadius) onCatch(m);
     return;
   }
 
-  // --- есть цель в другой комнате: начинаем переход ---
+  // --- есть цель в другой комнате ---
   if (m.targetRoom && (m.targetRoom.x!==m.room.x || m.targetRoom.y!==m.room.y)){
-    const d = bfsNextDir(m, m.room, m.targetRoom);
+    const d=bfsNextDir(m, m.room, m.targetRoom);
     if (d){
-      m.cross = {
+      m.cross={
         key: doorKey(m.room.x, m.room.y, d),
         dir: d,
-        from: {x:m.room.x, y:m.room.y},
-        to:   {x:m.room.x+DIR[d].dx, y:m.room.y+DIR[d].dy},
+        from:{x:m.room.x, y:m.room.y},
+        to:  {x:m.room.x+DIR[d].dx, y:m.room.y+DIR[d].dy},
         stage:'approach', requested:false, entered:false,
       };
       return;
     }
-    m.targetRoom = null;                  // пути нет
+    m.targetRoom=null;
   }
 
-  // --- дошли до цели / нечего делать: бродим по комнате ---
-  m.state = 'idle';
-  m.targetRoom = null;
-  if (m.wanderWait > 0){ m.wanderWait -= dt; m.moving = 0; return; }
+  // --- цель достигнута, ничего не чует: погоня прекращается ---
+  m.state='idle';
+  m.reason='';
+  m.targetRoom=null;
+  m.ignoreDoorKey=null;
+  if (m.wanderWait>0){ m.wanderWait-=dt; m.moving=0; return; }
   if (!m.wanderTarget){
-    const mg = ROOM_SIZE*0.5 - 34;
-    m.wanderTarget = {
-      x: roomCX(m.room.x) + (Math.random()*2-1)*mg,
-      y: roomCY(m.room.y) + (Math.random()*2-1)*mg,
+    const mg=ROOM_SIZE*0.5-34;
+    m.wanderTarget={
+      x: roomCX(m.room.x)+(Math.random()*2-1)*mg,
+      y: roomCY(m.room.y)+(Math.random()*2-1)*mg,
     };
   }
   if (moveToward(m, m.wanderTarget.x, m.wanderTarget.y, cfg.wanderSpeed, dt)){
-    m.wanderTarget = null;
-    m.wanderWait = 0.4 + Math.random()*1.6;
+    m.wanderTarget=null;
+    m.wanderWait=0.4+Math.random()*1.6;
   }
 }
 
 function onCatch(m){
   caughtCount++;
-  caughtEl.textContent = caughtCount;
+  caughtEl.textContent=caughtCount;
   flashMessage('Монстр вас настиг!');
-  // возвращаем монстра «домой» и даём передышку
   if (m.cross) releaseDoor(m.cross.key, m);
-  m.cross = null;
-  m.room = {x:m.home.x, y:m.home.y};
-  m.x = roomCX(m.home.x); m.y = roomCY(m.home.y);
-  m.state='idle'; m.targetRoom=null; m.wanderTarget=null;
-  m.stun = 2.0; m.alert = 0;
+  m.cross=null;
+  m.room={x:m.home.x, y:m.home.y};
+  m.x=roomCX(m.home.x); m.y=roomCY(m.home.y);
+  m.state='idle'; m.reason=''; m.targetRoom=null; m.wanderTarget=null;
+  m.ignoreDoorKey=null;
+  m.stun=2.0; m.alert=0;
 }
 
 // ============================================================
 // 8. ТЕКСТУРЫ ПОЛА
 // ============================================================
-const patternCache = new Map();
+const patternCache=new Map();
 
-function getRoomPattern(rx, ry){
-  const key = `${rx},${ry}`;
+function getRoomPattern(rx,ry){
+  const key=`${rx},${ry}`;
   if (patternCache.has(key)) return patternCache.get(key);
 
-  const off = document.createElement('canvas');
-  off.width = ROOM_SIZE; off.height = ROOM_SIZE;
-  const c = off.getContext('2d');
-  const rng = mulberry32(roomSeed(rx,ry));
-  const r = ()=>rng();
+  const off=document.createElement('canvas');
+  off.width=ROOM_SIZE; off.height=ROOM_SIZE;
+  const c=off.getContext('2d');
+  const rng=mulberry32(roomSeed(rx,ry));
+  const r=()=>rng();
 
-  c.strokeStyle = 'rgba(0,0,0,0.15)';
-  c.lineWidth = 1;
+  c.strokeStyle='rgba(0,0,0,0.15)';
+  c.lineWidth=1;
 
-  const S = ROOM_SIZE;
-  const texType = Math.floor(r()*10);
-  const step = 18 + Math.floor(r()*32);
+  const S=ROOM_SIZE;
+  const texType=Math.floor(r()*10);
+  const step=18+Math.floor(r()*32);
 
   const line=(x1,y1,x2,y2)=>{ c.beginPath(); c.moveTo(x1,y1); c.lineTo(x2,y2); c.stroke(); };
   const parallels=(angle,st)=>{
@@ -521,8 +554,8 @@ function getRoomPattern(rx, ry){
     const bh=14+Math.floor(r()*16), bw=28+Math.floor(r()*34);
     for(let row=0; row*bh<S; row++){
       const y=row*bh; line(0,y,S,y);
-      const off2=(row%2)*(bw/2);
-      for(let x=off2;x<S;x+=bw) line(x,y,x,y+bh);
+      const o=(row%2)*(bw/2);
+      for(let x=o;x<S;x+=bw) line(x,y,x,y+bh);
     }
   } else if (texType===4){
     const rs=14+Math.floor(r()*24);
@@ -563,10 +596,10 @@ function getRoomPattern(rx, ry){
   } else {
     const tw=20+Math.floor(r()*20), th=16+Math.floor(r()*16);
     for(let row=-1; row*th<S+th; row++){
-      const off2=(row%2)*(tw/2);
+      const o=(row%2)*(tw/2);
       for(let col=-1; col*tw<S+tw; col++){
         c.beginPath();
-        c.arc(col*tw+off2+tw/2, row*th+th, tw/2, Math.PI, TAU);
+        c.arc(col*tw+o+tw/2, row*th+th, tw/2, Math.PI, TAU);
         c.stroke();
       }
     }
@@ -585,41 +618,40 @@ function roomColor(x,y){
 // ============================================================
 // 9. РЕНДЕРИНГ
 // ============================================================
-const canvas = document.getElementById('game');
-const ctx    = canvas.getContext('2d');
-const posEl  = document.getElementById('pos');
-const msgEl  = document.getElementById('msg');
-const caughtEl = document.getElementById('caught');
+const canvas=document.getElementById('game');
+const ctx=canvas.getContext('2d');
+const posEl=document.getElementById('pos');
+const msgEl=document.getElementById('msg');
+const caughtEl=document.getElementById('caught');
+const dbgBtn=document.getElementById('dbgBtn');
+const resetBtn=document.getElementById('resetBtn');
 
-/** Затемнение по удалению от камеры (плавно, без скачков при переходе). */
-function alphaForWorld(wx, wy){
-  const d = Math.hypot((wx-camX)/ROOM_SIZE, (wy-camY)/ROOM_SIZE);
-  return clamp(1 - 0.22*d, 0.42, 1);
+function alphaForWorld(wx,wy){
+  const d=Math.hypot((wx-camX)/ROOM_SIZE,(wy-camY)/ROOM_SIZE);
+  return clamp(1-0.22*d, 0.42, 1);
 }
 
 function render(time){
   ctx.fillStyle='#000';
   ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE);
 
-  // --- список видимых комнат ---
-  const visible = [];
-  const half = ROOM_SIZE/2;
+  const visible=[];
+  const half=ROOM_SIZE/2;
   for (let ry=player.y-3; ry<=player.y+3; ry++){
     for (let rx=player.x-3; rx<=player.x+3; rx++){
       if (!inBounds(rx,ry)) continue;
       const cx=roomCX(rx), cy=roomCY(ry);
       const l=sx(cx-half), t=sy(cy-half);
-      if (l>CANVAS_SIZE || t>CANVAS_SIZE || l+ROOM_SIZE<0 || t+ROOM_SIZE<0) continue;
+      if (l>CANVAS_SIZE||t>CANVAS_SIZE||l+ROOM_SIZE<0||t+ROOM_SIZE<0) continue;
       visible.push({rx,ry,cx,cy,l,t,alpha:alphaForWorld(cx,cy)});
     }
   }
 
-  // 1. полы
   for (const r of visible){
     ctx.save();
-    ctx.globalAlpha = r.alpha;
-    ctx.fillStyle = roomColor(r.rx,r.ry);
-    ctx.fillRect(r.l, r.t, ROOM_SIZE, ROOM_SIZE);
+    ctx.globalAlpha=r.alpha;
+    ctx.fillStyle=roomColor(r.rx,r.ry);
+    ctx.fillRect(r.l,r.t,ROOM_SIZE,ROOM_SIZE);
     ctx.save();
     ctx.beginPath(); ctx.rect(r.l,r.t,ROOM_SIZE,ROOM_SIZE); ctx.clip();
     ctx.drawImage(getRoomPattern(r.rx,r.ry), r.l, r.t);
@@ -627,23 +659,18 @@ function render(time){
     ctx.restore();
   }
 
-  // 2. стены
   for (const r of visible) drawRoomWalls(r);
 
-  // 3. створки дверей
-  const keys = new Set();
+  const keys=new Set();
   for (const r of visible)
     for (const side of ['N','S','E','W'])
       if (sideType(r.rx,r.ry,side)!=='wall') keys.add(doorKey(r.rx,r.ry,side));
   for (const k of keys) drawDoorLeaf(k);
 
-  // 4. монстры
   for (const m of monsters) drawMonster(m, time);
 
-  // 5. туман
   drawFog();
 
-  // 6. игрок
   ctx.fillStyle='#fff';
   ctx.shadowColor='rgba(255,255,255,0.7)';
   ctx.shadowBlur=10;
@@ -656,7 +683,7 @@ function render(time){
 function drawRoomWalls(r){
   const x0=r.l, y0=r.t;
   for (const side of ['N','S','E','W']){
-    const t = sideType(r.rx,r.ry,side);
+    const t=sideType(r.rx,r.ry,side);
     let ax,ay,bx,by;
     if (side==='N'){ ax=x0; ay=y0; bx=x0+ROOM_SIZE; by=y0; }
     if (side==='S'){ ax=x0; ay=y0+ROOM_SIZE; bx=x0+ROOM_SIZE; by=y0+ROOM_SIZE; }
@@ -668,28 +695,28 @@ function drawRoomWalls(r){
     const mx=(ax+bx)/2, my=(ay+by)/2;
     const len=Math.hypot(bx-ax,by-ay);
     const ux=(bx-ax)/len, uy=(by-ay)/len;
-    strokeLine(ax,ay, mx-ux*DOOR_WIDTH/2, my-uy*DOOR_WIDTH/2, WALL_COLOR,4, r.alpha);
-    strokeLine(mx+ux*DOOR_WIDTH/2, my+uy*DOOR_WIDTH/2, bx,by, WALL_COLOR,4, r.alpha);
+    strokeLine(ax,ay, mx-ux*DOOR_WIDTH/2, my-uy*DOOR_WIDTH/2, WALL_COLOR,4,r.alpha);
+    strokeLine(mx+ux*DOOR_WIDTH/2, my+uy*DOOR_WIDTH/2, bx,by, WALL_COLOR,4,r.alpha);
   }
 }
 
 function drawDoorLeaf(key){
-  const g = doorGeom(key);
-  const a = doorAnims.get(key);
-  const angle = a ? a.angle : 0;
+  const g=doorGeom(key);
+  const a=doorAnims.get(key);
+  const angle=a?a.angle:0;
 
   const p1x=sx(g.p1x), p1y=sy(g.p1y);
   const p2x=sx(g.p2x), p2y=sy(g.p2y);
-  const rad = angle*Math.PI/180;
+  const rad=angle*Math.PI/180;
   const vx=p2x-p1x, vy=p2y-p1y;
   const c=Math.cos(rad), s=Math.sin(rad);
   const hx=p1x+vx*c-vy*s, hy=p1y+vx*s+vy*c;
 
-  const color = doorTypeByKey(key)==='locked' ? DOOR_LOCKED_COLOR : DOOR_COLOR;
-  const al = alphaForWorld(g.mx,g.my);
+  const color=doorTypeByKey(key)==='locked'?DOOR_LOCKED_COLOR:DOOR_COLOR;
+  const al=alphaForWorld(g.mx,g.my);
 
   ctx.save();
-  ctx.globalAlpha = Math.max(al, 0.7);
+  ctx.globalAlpha=Math.max(al,0.7);
   ctx.strokeStyle=color; ctx.lineWidth=7; ctx.lineCap='round';
   ctx.beginPath(); ctx.moveTo(p1x,p1y); ctx.lineTo(hx,hy); ctx.stroke();
   ctx.fillStyle=color;
@@ -708,7 +735,7 @@ function strokeLine(ax,ay,bx,by,color,w,alpha){
 
 function drawFog(){
   const cx=CANVAS_SIZE/2, cy=CANVAS_SIZE/2;
-  const g = ctx.createRadialGradient(cx,cy, ROOM_SIZE*0.45, cx,cy, ROOM_SIZE*1.95);
+  const g=ctx.createRadialGradient(cx,cy,ROOM_SIZE*0.45, cx,cy,ROOM_SIZE*1.95);
   g.addColorStop(0.00,'rgba(0,0,0,0)');
   g.addColorStop(0.35,'rgba(0,0,0,0.28)');
   g.addColorStop(0.65,'rgba(0,0,0,0.70)');
@@ -718,79 +745,69 @@ function drawFog(){
   ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE);
 }
 
-// --- отрисовка монстров ---
-function drawMonster(m, time){
+function drawMonster(m,time){
   const px=sx(m.x), py=sy(m.y);
   if (px<-60||py<-60||px>CANVAS_SIZE+60||py>CANVAS_SIZE+60) return;
-  const alpha = alphaForWorld(m.x,m.y);
-  m.cfg.draw(m, px, py, alpha, time);
+  const alpha=alphaForWorld(m.x,m.y);
+  m.cfg.draw(m,px,py,alpha,time);
 
-  if (m.alert > 0){
+  if (m.alert>0){
     ctx.save();
-    ctx.globalAlpha = alpha * Math.min(1, m.alert*2);
-    ctx.fillStyle = '#ff5555';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('!', px, py - m.cfg.size*2.2);
+    ctx.globalAlpha=alpha*Math.min(1,m.alert*2);
+    ctx.fillStyle = m.alertMark==='!' ? '#ff5555' : '#ffcc55';
+    ctx.font='bold 20px sans-serif';
+    ctx.textAlign='center';
+    ctx.fillText(m.alertMark, px, py-m.cfg.size*2.2);
     ctx.restore();
   }
 }
 
-function drawMonster1(m, px, py, alpha, time){
+function drawMonster1(m,px,py,alpha,time){
   const cfg=m.cfg, R=cfg.size;
-  const chasing = (m.state==='chase');
+  const chasing=(m.state==='chase');
 
-  // аура при погоне
   if (chasing && m.stun<=0){
-    const pulse = 0.35 + 0.15*Math.sin(time*6);
-    const g = ctx.createRadialGradient(px,py,R*0.5, px,py,R*3.4);
-    g.addColorStop(0, cfg.auraColor + (0.30*pulse) + ')');
-    g.addColorStop(1, cfg.auraColor + '0)');
+    const pulse=0.35+0.15*Math.sin(time*6);
+    const g=ctx.createRadialGradient(px,py,R*0.5, px,py,R*3.4);
+    g.addColorStop(0, cfg.auraColor+(0.30*pulse)+')');
+    g.addColorStop(1, cfg.auraColor+'0)');
     ctx.save(); ctx.globalAlpha=alpha; ctx.fillStyle=g;
     ctx.beginPath(); ctx.arc(px,py,R*3.4,0,TAU); ctx.fill(); ctx.restore();
   }
 
   ctx.save();
-  ctx.globalAlpha = alpha;
+  ctx.globalAlpha=alpha;
   ctx.translate(px,py);
   ctx.rotate(m.facing);
 
-  // тень
   ctx.fillStyle='rgba(0,0,0,0.35)';
   ctx.beginPath(); ctx.ellipse(2,3,R*1.15,R*0.95,0,0,TAU); ctx.fill();
 
-  // лапы
-  const gait = time * (m.moving>1 ? (chasing?11:6) : 1.5);
+  const gait=time*(m.moving>1 ? (chasing?11:6) : 1.5);
   ctx.strokeStyle=cfg.legColor; ctx.lineWidth=2.6; ctx.lineCap='round';
   for (const sgn of [-1,1]){
     for (let i=0;i<3;i++){
-      const base = sgn*(0.75 + i*0.72);
-      const ph = Math.sin(gait + i*1.25 + (sgn>0?Math.PI:0))*0.26;
-      const a = base + ph;
-      const kx=Math.cos(a)*R*1.2,  ky=Math.sin(a)*R*1.2;
+      const base=sgn*(0.75+i*0.72);
+      const ph=Math.sin(gait+i*1.25+(sgn>0?Math.PI:0))*0.26;
+      const a=base+ph;
+      const kx=Math.cos(a)*R*1.2, ky=Math.sin(a)*R*1.2;
       const fx=Math.cos(a+sgn*0.45)*R*2.1, fy=Math.sin(a+sgn*0.45)*R*2.1;
       ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(kx,ky); ctx.lineTo(fx,fy); ctx.stroke();
     }
   }
 
-  // брюшко
   ctx.fillStyle=cfg.bodyColor;
   ctx.beginPath(); ctx.ellipse(-R*0.25,0,R*1.05,R*0.85,0,0,TAU); ctx.fill();
-  // панцирь
   ctx.fillStyle=cfg.shellColor;
   ctx.beginPath(); ctx.ellipse(-R*0.15,0,R*0.72,R*0.58,0,0,TAU); ctx.fill();
-  // голова
   ctx.fillStyle=cfg.bodyColor;
   ctx.beginPath(); ctx.arc(R*0.85,0,R*0.52,0,TAU); ctx.fill();
-  // жвалы
   ctx.strokeStyle=cfg.legColor; ctx.lineWidth=2;
   ctx.beginPath();
   ctx.moveTo(R*1.15,-R*0.28); ctx.lineTo(R*1.6,-R*0.12);
   ctx.moveTo(R*1.15, R*0.28); ctx.lineTo(R*1.6, R*0.12);
   ctx.stroke();
-  // глаза
-  const eyeGlow = chasing ? 1 : 0.75;
-  ctx.fillStyle=cfg.eyeColor; ctx.globalAlpha=alpha*eyeGlow;
+  ctx.fillStyle=cfg.eyeColor; ctx.globalAlpha=alpha*(chasing?1:0.75);
   ctx.beginPath(); ctx.arc(R*1.02,-R*0.24,R*0.17,0,TAU); ctx.fill();
   ctx.beginPath(); ctx.arc(R*1.02, R*0.24,R*0.17,0,TAU); ctx.fill();
 
@@ -798,18 +815,46 @@ function drawMonster1(m, px, py, alpha, time){
 }
 
 function drawDebug(){
-  ctx.save();
-  ctx.font='11px monospace'; ctx.textAlign='left';
-  ctx.fillStyle='rgba(0,0,0,0.6)';
-  ctx.fillRect(6,6,250,18+monsters.length*14);
-  ctx.fillStyle='#9f9';
-  ctx.fillText(`двери в работе: ${doorAnims.size}`, 12, 20);
+  const pr=playerRoomForAI();
+  const lines=[
+    `игрок: комната(${player.x},${player.y})  для ИИ(${pr.x},${pr.y})`,
+    `двери в анимации: ${doorAnims.size}`,
+  ];
   monsters.forEach((m,i)=>{
-    ctx.fillText(`M${i} ${m.state} room(${m.room.x},${m.room.y}) `+
-      `tgt(${m.targetRoom?m.targetRoom.x+','+m.targetRoom.y:'-'}) `+
-      `${m.cross?'cross:'+m.cross.dir+'/'+m.cross.stage:''}`, 12, 34+i*14);
+    lines.push(
+      `M${i} ${m.state.padEnd(5)} ${m.reason.padEnd(5)} ` +
+      `room(${m.room.x},${m.room.y}) ` +
+      `tgt(${m.targetRoom ? m.targetRoom.x+','+m.targetRoom.y : '—'})` +
+      (m.cross ? ` cross ${m.cross.dir}/${m.cross.stage}` : '') +
+      (m.stun>0 ? ' STUN' : '')
+    );
   });
+
+  const w=330, h=12+lines.length*15;
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.82)';
+  ctx.fillRect(8,8,w,h);
+  ctx.strokeStyle='#4a4'; ctx.lineWidth=1;
+  ctx.strokeRect(8.5,8.5,w,h);
+  ctx.font='12px monospace'; ctx.textAlign='left'; ctx.fillStyle='#9f9';
+  lines.forEach((s,i)=> ctx.fillText(s, 16, 26+i*15));
   ctx.restore();
+
+  // Подсветка зоны чутья текущих монстров
+  for (const m of monsters){
+    if (m.stun>0) continue;
+    for (const d of ['N','S','E','W']){
+      const nx=m.room.x+DIR[d].dx, ny=m.room.y+DIR[d].dy;
+      if (!inBounds(nx,ny)) continue;
+      if (!monsterCanPass(m,m.room.x,m.room.y,d)) continue;
+      const l=sx(roomCX(nx)-ROOM_SIZE/2), t=sy(roomCY(ny)-ROOM_SIZE/2);
+      ctx.save();
+      ctx.strokeStyle='rgba(255,80,80,0.35)';
+      ctx.lineWidth=2; ctx.setLineDash([6,6]);
+      ctx.strokeRect(l+3,t+3,ROOM_SIZE-6,ROOM_SIZE-6);
+      ctx.restore();
+    }
+  }
 }
 
 // ============================================================
@@ -826,8 +871,18 @@ canvas.addEventListener('click',(e)=>{
   if (dir) startMove(dir);
 });
 
+function toggleDebug(){
+  DEBUG=!DEBUG;
+  dbgBtn.classList.toggle('on', DEBUG);
+}
+dbgBtn.addEventListener('click', ()=>{ toggleDebug(); dbgBtn.blur(); });
+resetBtn.addEventListener('click', ()=>{ resetMonsters(); resetBtn.blur(); });
+
 document.addEventListener('keydown',(e)=>{
-  if (e.key==='d'||e.key==='D'||e.key==='в'||e.key==='В'){ DEBUG=!DEBUG; return; }
+  // e.code — физическая клавиша, не зависит от раскладки
+  if (e.code==='KeyD'){ e.preventDefault(); toggleDebug(); return; }
+  if (e.code==='KeyR'){ e.preventDefault(); resetMonsters(); return; }
+
   const km={ArrowUp:'N',ArrowDown:'S',ArrowRight:'E',ArrowLeft:'W'};
   const dir=km[e.key];
   if(!dir) return;
@@ -837,7 +892,7 @@ document.addEventListener('keydown',(e)=>{
 
 let messageTimer=null;
 function flashMessage(text){
-  msgEl.textContent = ' · ' + text;
+  msgEl.textContent=' · '+text;
   clearTimeout(messageTimer);
   messageTimer=setTimeout(()=>{ msgEl.textContent=''; },1600);
 }
@@ -845,8 +900,7 @@ function flashMessage(text){
 // ============================================================
 // 11. СТАРТ И ГЛАВНЫЙ ЦИКЛ
 // ============================================================
-spawnMonster('monster1', 0, 0);
-spawnMonster('monster1', 4, 3);
+resetMonsters();
 
 let lastTime=performance.now();
 function loop(now){
@@ -854,8 +908,8 @@ function loop(now){
   lastTime=now;
 
   updatePlayer(dt);
-  camX = roomCX(player.x) + visual.offsetX;
-  camY = roomCY(player.y) + visual.offsetY;
+  camX=roomCX(player.x)+visual.offsetX;
+  camY=roomCY(player.y)+visual.offsetY;
 
   for (const m of monsters) updateMonster(m, dt);
   updateDoors(dt);
