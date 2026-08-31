@@ -1,0 +1,1412 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Лабиринт — v8 (генератор и карта)</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; background:#0c0e11; color:#ddd; font-family:sans-serif; padding:14px; }
+  #app { display:flex; gap:18px; align-items:flex-start; justify-content:center; }
+  #side { width:390px; flex:0 0 390px; }
+  #stage { flex:0 1 auto; }
+  @media (max-width:1230px){
+    #app { flex-direction:column; align-items:center; }
+    #side { order:2; width:min(390px,94vw); flex:none; }
+    #stage { order:1; }
+  }
+
+  #game { background:#000; border:2px solid #3a3f46; border-radius:3px;
+          cursor:pointer; display:block; width:min(800px,94vw); height:auto; aspect-ratio:1/1; }
+
+  .panel { background:#14171c; border:1px solid #2c313a; border-radius:6px; padding:10px; margin-bottom:10px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .row + .row { margin-top:8px; }
+  label { font-size:12px; color:#93a; color:#8a94a3; }
+
+  button, select {
+    background:#1e222a; color:#c8cfd8; border:1px solid #3b424d; border-radius:4px;
+    padding:6px 11px; font-size:12px; font-family:inherit; cursor:pointer;
+  }
+  button:hover { background:#262c36; color:#fff; }
+  button.on { background:#26402c; border-color:#4a7a53; color:#bfe8c8; }
+  button.danger { border-color:#6b3030; color:#e0a0a0; }
+
+  #mapCanvas { background:#0b0d10; border:1px solid #2c313a; border-radius:4px;
+               display:block; width:100%; height:auto; aspect-ratio:1/1; image-rendering:pixelated; }
+
+  #info { margin-top:9px; font-size:13px; text-align:center; min-height:20px; color:#aab; }
+  #msg { color:#ffd479; }
+  .stat { display:inline-block; margin:0 7px; }
+  .stat b { color:#e8eef5; font-weight:600; }
+  #legend { font-size:11px; color:#6f7887; line-height:1.7; margin-top:8px; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:-1px; margin-right:4px; }
+  #hint { margin-top:6px; font-size:11px; color:#69707d; text-align:center; }
+  h3 { margin:0 0 8px; font-size:13px; color:#8a94a3; font-weight:600; letter-spacing:.4px; }
+  code { color:#7fa6d0; font-size:11px; }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <aside id="side">
+    <div class="panel">
+      <h3>КАРТА</h3>
+      <div class="row">
+        <button id="modeLocal" class="on">Окрестности</button>
+        <button id="modeFull">Весь лабиринт</button>
+      </div>
+      <div class="row"><canvas id="mapCanvas" width="380" height="380"></canvas></div>
+      <div id="legend">
+        <span class="sw" style="background:#4d5b6e"></span>пройдено &nbsp;
+        <span class="sw" style="background:#242c37"></span>видел издали &nbsp;
+        <span class="sw" style="background:#7ee06a"></span>выход<br>
+        <span class="sw" style="background:#ffffff"></span>вы &nbsp;
+        <span class="sw" style="background:#d84a4a"></span>монстр рядом
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>ЛАБИРИНТ</h3>
+      <div class="row">
+        <label>Сложность</label>
+        <select id="diffSel">
+          <option value="easy">Лёгкий (625)</option>
+          <option value="normal" selected>Средний (1089)</option>
+          <option value="hard">Сложный (1681)</option>
+        </select>
+        <button id="newBtn">Новый</button>
+      </div>
+      <div class="row">
+        <label>Сид</label><code id="seedOut">—</code>
+        <button id="copySeed">копировать</button>
+      </div>
+      <div class="row">
+        <button id="dbgBtn">Отладка ИИ (D)</button>
+        <button id="solBtn" class="danger">Показать решение</button>
+      </div>
+    </div>
+  </aside>
+
+  <div id="stage">
+    <canvas id="game" width="800" height="800"></canvas>
+    <div id="info">
+      <span class="stat">Комната <b id="pos">–</b></span>
+      <span class="stat">Зона <b id="zone">–</b></span>
+      <span class="stat">Открыто <b id="explored">0</b></span>
+      <span class="stat">Поймано <b id="caught">0</b></span>
+      <span id="msg"></span>
+    </div>
+    <div id="hint">Стрелки / WASD или клик по соседней комнате · M — режим карты</div>
+  </div>
+
+</div>
+
+<script>
+'use strict';
+
+// ============================================================
+// 1. КОНСТАНТЫ
+// ============================================================
+const CANVAS_SIZE = 800;
+const ROOM_SIZE   = 250;
+
+const T_OPEN = 0.6, T_CLOSE = 0.6, T_MOVE = 0.9;
+
+const DOOR_WIDTH = 64;
+const DOOR_COLOR = '#8b5a2b';
+const DOOR_LOCKED_COLOR = '#b22222';
+const WALL_COLOR = '#1b1e23';
+
+const DIR = {
+  N:{dx:0,dy:-1,opp:'S'}, S:{dx:0,dy:1,opp:'N'},
+  E:{dx:1,dy:0,opp:'W'},  W:{dx:-1,dy:0,opp:'E'},
+};
+const DIRS = ['N','S','E','W'];
+const SWING_BY_DIR = {N:+1, S:-1, E:+1, W:-1};
+const TAU = Math.PI*2;
+
+const MONSTER_ACTIVE_RANGE = 12;   // дальше монстры «замирают»
+const PATTERN_CACHE_MAX    = 90;   // LRU: 1000+ комнат в память не влезут
+
+let DEBUG = false, SHOW_SOLUTION = false;
+
+// ============================================================
+// 2. НАСТРОЙКИ СЛОЖНОСТИ
+// ============================================================
+const DIFFICULTY = {
+  easy: {
+    label:'Лёгкий', size:25,
+    zoneFrac:[0.34,0.58,0.78,1.00],
+    sectors: [1, 1, 2, 3],
+    throats: [0, 8, 3, 2],
+    loops:   [1, 0.34, 0.18, 0.08],
+    monsters:[0, 2, 3, 5],
+    onPath:  [0, 0.20, 0.40, 0.65],
+    zoneNames:['Ядро','Галереи','Ходы','Горло'],
+  },
+  normal: {
+    label:'Средний', size:33,
+    zoneFrac:[0.28,0.52,0.72,0.88,1.00],
+    sectors: [1, 1, 3, 5, 6],
+    throats: [0, 10, 2, 1, 1],
+    loops:   [1, 0.28, 0.13, 0.05, 0.00],
+    monsters:[1, 3, 6, 8, 10],
+    onPath:  [0, 0.15, 0.35, 0.55, 0.75],
+    zoneNames:['Ядро','Галереи','Ходы','Теснины','Горло'],
+  },
+  hard: {
+    label:'Сложный', size:41,
+    zoneFrac:[0.22,0.44,0.64,0.82,1.00],
+    sectors: [1, 2, 4, 6, 8],
+    throats: [0, 8, 2, 1, 1],
+    loops:   [1, 0.22, 0.10, 0.03, 0.00],
+    monsters:[2, 5, 9, 13, 16],
+    onPath:  [0, 0.20, 0.45, 0.65, 0.85],
+    zoneNames:['Ядро','Галереи','Ходы','Теснины','Горло'],
+  },
+};
+
+// ============================================================
+// 3. УТИЛИТЫ
+// ============================================================
+function mulberry32(seed){
+  return function(){
+    seed|=0; seed=seed+0x6D2B79F5|0;
+    let t=Math.imul(seed^seed>>>15,1|seed);
+    t=t+Math.imul(t^t>>>7,61|t)^t;
+    return((t^t>>>14)>>>0)/4294967296;
+  };
+}
+function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+function easeInOut(t){ return t<0.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2; }
+function approach(cur,target,step){
+  const d=target-cur;
+  return Math.abs(d)<=step ? target : cur+Math.sign(d)*step;
+}
+function shuffle(arr, rnd){
+  for(let i=arr.length-1;i>0;i--){
+    const j=Math.floor(rnd()*(i+1));
+    [arr[i],arr[j]]=[arr[j],arr[i]];
+  }
+  return arr;
+}
+
+// ============================================================
+// 4. ГЕНЕРАТОР ЛАБИРИНТА
+// ============================================================
+function generateMaze(cfg, seed){
+  const rnd = mulberry32(seed);
+  const W = cfg.size, H = cfg.size;
+  const cx = (W-1)>>1, cy = (H-1)>>1;
+  const maxRing = Math.max(cx, cy);
+  const NZ = cfg.zoneFrac.length;
+
+  // --- сетка комнат ---
+  const rooms = [];
+  for (let y=0;y<H;y++){
+    const row=[];
+    for (let x=0;x<W;x++) row.push({N:'wall',S:'wall',E:'wall',W:'wall'});
+    rooms.push(row);
+  }
+  const idx  = (x,y)=> y*W+x;
+  const inB  = (x,y)=> x>=0 && y>=0 && x<W && y<H;
+  const ring = (x,y)=> Math.max(Math.abs(x-cx), Math.abs(y-cy));
+
+  function openEdge(x,y,d){
+    const nx=x+DIR[d].dx, ny=y+DIR[d].dy;
+    if (!inB(nx,ny)) return;
+    rooms[y][x][d] = 'closed';
+    rooms[ny][nx][DIR[d].opp] = 'closed';
+  }
+
+  // --- границы зон по кольцам ---
+  const bounds = [];
+  for (let i=0;i<NZ;i++){
+    let b = Math.round(cfg.zoneFrac[i]*maxRing);
+    if (i>0) b = Math.max(b, bounds[i-1]+1);
+    bounds.push(Math.min(b, maxRing));
+  }
+  bounds[NZ-1] = maxRing;
+
+  const zone = new Int8Array(W*H);
+  for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+    const r=ring(x,y);
+    let z=NZ-1;
+    for (let i=0;i<NZ;i++) if (r<=bounds[i]){ z=i; break; }
+    zone[idx(x,y)] = z;
+  }
+  const zoneOf = (x,y)=> zone[idx(x,y)];
+
+  // --- секторы: угловые клинья со случайным поворотом ---
+  const rot = [];
+  for (let k=0;k<NZ;k++) rot.push(rnd());
+  function sectorOf(x,y,k){
+    const S = cfg.sectors[k];
+    if (S<=1) return 0;
+    let t = (Math.atan2(y-cy, x-cx) + Math.PI) / TAU;
+    t = (t + rot[k]) % 1;
+    return Math.floor(t*S) % S;
+  }
+
+  // --- клетки по зонам и секторам ---
+  const zoneCells = Array.from({length:NZ},()=>[]);
+  for (let y=0;y<H;y++) for (let x=0;x<W;x++) zoneCells[zoneOf(x,y)].push({x,y});
+
+  // --- union-find ---
+  const parent = new Int32Array(W*H);
+  for (let i=0;i<W*H;i++) parent[i]=i;
+  function find(a){ while(parent[a]!==a){ parent[a]=parent[parent[a]]; a=parent[a]; } return a; }
+  function unite(a,b){ const ra=find(a), rb=find(b); if(ra===rb) return false; parent[ra]=rb; return true; }
+
+  // --- прокладка внутри каждого сектора каждой зоны ---
+  const zoneComponents = Array.from({length:NZ},()=>[]);
+
+  for (let k=0;k<NZ;k++){
+    const groups = new Map();
+    for (const c of zoneCells[k]){
+      const s = sectorOf(c.x,c.y,k);
+      if (!groups.has(s)) groups.set(s,[]);
+      groups.get(s).push(c);
+    }
+
+    for (const cells of groups.values()){
+      const inGroup = new Set(cells.map(c=>idx(c.x,c.y)));
+
+      // рёбра внутри сектора
+      const edges=[];
+      for (const c of cells){
+        for (const d of ['E','S']){
+          const nx=c.x+DIR[d].dx, ny=c.y+DIR[d].dy;
+          if (!inB(nx,ny)) continue;
+          if (!inGroup.has(idx(nx,ny))) continue;
+          edges.push({x:c.x,y:c.y,d});
+        }
+      }
+      shuffle(edges, rnd);
+
+      // остовное дерево + петли
+      const leftovers=[];
+      for (const e of edges){
+        const a=idx(e.x,e.y);
+        const b=idx(e.x+DIR[e.d].dx, e.y+DIR[e.d].dy);
+        if (unite(a,b)) openEdge(e.x,e.y,e.d);
+        else leftovers.push(e);
+      }
+      const p = cfg.loops[k];
+      for (const e of leftovers) if (rnd()<p) openEdge(e.x,e.y,e.d);
+
+      // компоненты сектора (клин может распасться на углах)
+      const byRoot = new Map();
+      for (const c of cells){
+        const r = find(idx(c.x,c.y));
+        if (!byRoot.has(r)) byRoot.set(r,[]);
+        byRoot.get(r).push(c);
+      }
+      for (const comp of byRoot.values()) zoneComponents[k].push(comp);
+    }
+  }
+
+  // --- горловины: каждая компонента зоны k цепляется к зоне k-1 ---
+  function connectComponent(comp, k){
+    const want = Math.max(1, cfg.throats[k]);
+    const cands=[];
+    for (const c of comp){
+      for (const d of DIRS){
+        const nx=c.x+DIR[d].dx, ny=c.y+DIR[d].dy;
+        if (!inB(nx,ny)) continue;
+        if (zoneOf(nx,ny) !== k-1) continue;
+        cands.push({x:c.x,y:c.y,d, ang:Math.atan2(c.y-cy, c.x-cx)});
+      }
+    }
+    if (!cands.length){
+      // клин не касается внутренней зоны — цепляем к любому соседу поменьше
+      for (const c of comp){
+        for (const d of DIRS){
+          const nx=c.x+DIR[d].dx, ny=c.y+DIR[d].dy;
+          if (!inB(nx,ny)) continue;
+          if (zoneOf(nx,ny) > k) continue;
+          if (find(idx(nx,ny)) === find(idx(c.x,c.y))) continue;
+          cands.push({x:c.x,y:c.y,d, ang:Math.atan2(c.y-cy, c.x-cx)});
+        }
+      }
+    }
+    if (!cands.length) return;
+
+    cands.sort((a,b)=>a.ang-b.ang);
+    const n = Math.min(want, cands.length);
+    const off = rnd();
+    const picked = new Set();
+    for (let i=0;i<n;i++){
+      let j = Math.floor(((i+off)/n)*cands.length) % cands.length;
+      let guard=0;
+      while (picked.has(j) && guard++<cands.length) j=(j+1)%cands.length;
+      picked.add(j);
+      const e = cands[j];
+      openEdge(e.x,e.y,e.d);
+      unite(idx(e.x,e.y), idx(e.x+DIR[e.d].dx, e.y+DIR[e.d].dy));
+    }
+  }
+
+  for (let k=1;k<NZ;k++)
+    for (const comp of zoneComponents[k]) connectComponent(comp, k);
+
+  // --- страховка: всё должно быть достижимо из центра ---
+  const startX=cx, startY=cy;
+  function bfsFrom(sx0, sy0){
+    const dist = new Int32Array(W*H).fill(-1);
+    const from = new Int32Array(W*H).fill(-1);
+    const q=[idx(sx0,sy0)];
+    dist[q[0]]=0;
+    for (let h=0; h<q.length; h++){
+      const cur=q[h], x=cur%W, y=(cur/W)|0;
+      for (const d of DIRS){
+        if (rooms[y][x][d]==='wall') continue;
+        const nx=x+DIR[d].dx, ny=y+DIR[d].dy;
+        if (!inB(nx,ny)) continue;
+        const ni=idx(nx,ny);
+        if (dist[ni]!==-1) continue;
+        dist[ni]=dist[cur]+1; from[ni]=cur;
+        q.push(ni);
+      }
+    }
+    return {dist, from};
+  }
+
+  let {dist, from} = bfsFrom(startX,startY);
+  for (let pass=0; pass<6; pass++){
+    let repaired=false;
+    for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+      if (dist[idx(x,y)]!==-1) continue;
+      // ищем достижимого соседа — предпочитаем внутрь (меньшая зона)
+      let best=null;
+      for (const d of DIRS){
+        const nx=x+DIR[d].dx, ny=y+DIR[d].dy;
+        if (!inB(nx,ny)) continue;
+        if (dist[idx(nx,ny)]===-1) continue;
+        const score = zoneOf(nx,ny)*10 + rnd();
+        if (!best || score<best.score) best={d, score};
+      }
+      if (best){ openEdge(x,y,best.d); repaired=true; }
+    }
+    if (!repaired) break;
+    ({dist, from} = bfsFrom(startX,startY));
+  }
+
+  // --- выход: дальняя клетка на внешней границе ---
+  const rim=[];
+  for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+    if (ring(x,y)!==maxRing) continue;
+    const dd = dist[idx(x,y)];
+    if (dd>0) rim.push({x,y,d:dd});
+  }
+  rim.sort((a,b)=>b.d-a.d);
+  const pool = rim.slice(0, Math.max(1, Math.floor(rim.length*0.25)));
+  const ex = pool[Math.floor(rnd()*pool.length)];
+
+  let exitDir='N';
+  if (ex.y===0) exitDir='N';
+  else if (ex.y===H-1) exitDir='S';
+  else if (ex.x===0) exitDir='W';
+  else exitDir='E';
+
+  // --- решающий путь ---
+  const solution=[];
+  {
+    let cur=idx(ex.x,ex.y);
+    while(cur!==-1){ solution.push({x:cur%W, y:(cur/W)|0}); cur=from[cur]; }
+    solution.reverse();
+  }
+  const solutionSet = new Set(solution.map(p=>`${p.x},${p.y}`));
+
+  return {
+    w:W, h:H, rooms, cfg, seed,
+    cx, cy, maxRing, NZ, bounds,
+    zone, zoneOf:(x,y)=>zone[y*W+x],
+    start:{x:startX,y:startY},
+    exit:{x:ex.x, y:ex.y}, exitDir,
+    dist, solution, solutionSet,
+    pathLen: solution.length-1,
+  };
+}
+
+// ============================================================
+// 5. СОСТОЯНИЕ МИРА
+// ============================================================
+let MAP=null;
+let WORLD_SEED=0;
+let visited=new Set();     // где был лично
+let seen=new Set();        // что видел на экране
+let gameWon=false;
+
+function inBounds(x,y){ return x>=0 && y>=0 && x<MAP.w && y<MAP.h; }
+function sideType(x,y,dir){ return MAP.rooms[y][x][dir]; }
+function zoneAt(x,y){ return MAP.zone[y*MAP.w+x]; }
+
+function doorKey(x,y,dir){
+  const nx=x+DIR[dir].dx, ny=y+DIR[dir].dy;
+  if (y<ny || (y===ny && x<nx)) return `${x},${y},${dir}`;
+  return `${nx},${ny},${DIR[dir].opp}`;
+}
+function parseDoorKey(k){ const p=k.split(','); return {x:+p[0], y:+p[1], dir:p[2]}; }
+function doorTypeByKey(k){ const p=parseDoorKey(k); return MAP.rooms[p.y][p.x][p.dir]; }
+
+// ============================================================
+// 6. КАМЕРА И ГЕОМЕТРИЯ
+// ============================================================
+let camX=0, camY=0;
+const roomCX = rx => rx*ROOM_SIZE;
+const roomCY = ry => ry*ROOM_SIZE;
+const sx = wx => wx - camX + CANVAS_SIZE/2;
+const sy = wy => wy - camY + CANVAS_SIZE/2;
+
+function doorGeom(key){
+  const k=parseDoorKey(key);
+  const cx=roomCX(k.x), cy=roomCY(k.y);
+  if (k.dir==='E'){
+    const wx=cx+ROOM_SIZE/2;
+    return {p1x:wx,p1y:cy-DOOR_WIDTH/2,p2x:wx,p2y:cy+DOOR_WIDTH/2,mx:wx,my:cy};
+  }
+  const wy=cy+ROOM_SIZE/2;
+  return {p1x:cx-DOOR_WIDTH/2,p1y:wy,p2x:cx+DOOR_WIDTH/2,p2y:wy,mx:cx,my:wy};
+}
+function doorCenter(rx,ry,dir){
+  return {x:roomCX(rx)+DIR[dir].dx*ROOM_SIZE/2, y:roomCY(ry)+DIR[dir].dy*ROOM_SIZE/2};
+}
+function clampToRoom(pt, room, margin){
+  const cx=roomCX(room.x), cy=roomCY(room.y), h=ROOM_SIZE/2-margin;
+  return {x:clamp(pt.x,cx-h,cx+h), y:clamp(pt.y,cy-h,cy+h)};
+}
+
+// ============================================================
+// 7. ДВЕРИ
+// ============================================================
+const doorAnims = new Map();
+
+function requestDoorOpen(key, sign, user){
+  let a=doorAnims.get(key);
+  if (!a){ a={key,angle:0,target:sign*90,users:new Set()}; doorAnims.set(key,a); }
+  else if (Math.abs(a.angle)>1) a.target=Math.sign(a.angle)*90;
+  else a.target=sign*90;
+  a.users.add(user);
+  return a;
+}
+function releaseDoor(key,user){
+  const a=doorAnims.get(key);
+  if(!a) return;
+  a.users.delete(user);
+  if (a.users.size===0) a.target=0;
+}
+function doorPassable(key){
+  const a=doorAnims.get(key);
+  return !!a && Math.abs(a.angle)>=88;
+}
+function updateDoors(dt){
+  for (const a of [...doorAnims.values()]){
+    a.angle = approach(a.angle, a.target, (a.target===0?90/T_CLOSE:90/T_OPEN)*dt);
+    if (a.angle===0 && a.target===0 && a.users.size===0) doorAnims.delete(a.key);
+  }
+}
+
+// ============================================================
+// 8. ИГРОК
+// ============================================================
+const player={x:0,y:0};
+const visual={offsetX:0,offsetY:0};
+let move=null;
+
+function markSeen(rx,ry){
+  for (let dy=-1;dy<=1;dy++) for (let dx=-1;dx<=1;dx++){
+    const nx=rx+dx, ny=ry+dy;
+    if (inBounds(nx,ny)) seen.add(`${nx},${ny}`);
+  }
+}
+function enterRoom(rx,ry){
+  visited.add(`${rx},${ry}`);
+  markSeen(rx,ry);
+  mapDirty=true;
+  posEl.textContent = `${rx},${ry}`;
+  zoneEl.textContent = MAP.cfg.zoneNames[zoneAt(rx,ry)];
+  exploredEl.textContent = visited.size;
+  if (rx===MAP.exit.x && ry===MAP.exit.y) onWin();
+}
+
+function startMove(dir){
+  if (move || gameWon) return;
+  const t=sideType(player.x,player.y,dir);
+  if (t==='wall'){ flashMessage('Там стена'); return; }
+  if (t==='locked'){ flashMessage('Дверь заперта'); return; }
+  const key=doorKey(player.x,player.y,dir);
+  requestDoorOpen(key, SWING_BY_DIR[dir], 'player');
+  move={dir,key,phase:'opening',progress:0};
+}
+
+function updatePlayer(dt){
+  if (!move) return;
+  if (move.phase==='opening'){
+    if (doorPassable(move.key)){ move.phase='moving'; move.progress=0; }
+    return;
+  }
+  move.progress+=dt;
+  const t=Math.min(move.progress/T_MOVE,1);
+  const e=easeInOut(t);
+  visual.offsetX=DIR[move.dir].dx*ROOM_SIZE*e;
+  visual.offsetY=DIR[move.dir].dy*ROOM_SIZE*e;
+  if (t>=1){
+    player.x+=DIR[move.dir].dx;
+    player.y+=DIR[move.dir].dy;
+    visual.offsetX=0; visual.offsetY=0;
+    releaseDoor(move.key,'player');
+    move=null;
+    enterRoom(player.x,player.y);
+  }
+}
+const playerWorld = ()=>({x:camX,y:camY});
+function playerRoomForAI(){
+  return {
+    x: clamp(Math.round(camX/ROOM_SIZE),0,MAP.w-1),
+    y: clamp(Math.round(camY/ROOM_SIZE),0,MAP.h-1),
+  };
+}
+
+// ============================================================
+// 9. МОНСТРЫ
+// ============================================================
+const MONSTER_TYPES = {
+  monster1: {
+    id:'monster1', title:'Ползун',
+    chaseSpeed:85, wanderSpeed:32, size:13,
+    bodyColor:'#5a1f1f', shellColor:'#8e2b2b', legColor:'#3a1414',
+    eyeColor:'#ffd24a', auraColor:'rgba(200,40,40,',
+    sightAdjacent:true, sightNeedsPassage:true, noticeDoors:true,
+    canOpenDoors:true, canOpenLocked:false, catchRadius:20,
+    draw:drawMonster1,
+  }
+};
+
+let monsters=[], caughtCount=0;
+
+function spawnMonster(typeId,rx,ry){
+  const cfg=MONSTER_TYPES[typeId];
+  monsters.push({
+    cfg, home:{x:rx,y:ry}, room:{x:rx,y:ry},
+    x:roomCX(rx), y:roomCY(ry), facing:0,
+    state:'idle', reason:'', targetRoom:null, cross:null,
+    ignoreDoorKey:null, wanderTarget:null, wanderWait:0,
+    alert:0, alertMark:'!', stun:0, moving:0,
+  });
+}
+
+function placeMonsters(rnd){
+  monsters=[]; caughtCount=0; caughtEl.textContent='0';
+  const cfg=MAP.cfg;
+  const pathByZone=Array.from({length:MAP.NZ},()=>[]);
+  for (const p of MAP.solution){
+    const d=MAP.dist[p.y*MAP.w+p.x];
+    if (d>8) pathByZone[zoneAt(p.x,p.y)].push(p);
+  }
+  const freeByZone=Array.from({length:MAP.NZ},()=>[]);
+  for (let y=0;y<MAP.h;y++) for (let x=0;x<MAP.w;x++){
+    const d=MAP.dist[y*MAP.w+x];
+    if (d<6) continue;
+    let deg=0; for (const dd of DIRS) if (MAP.rooms[y][x][dd]!=='wall') deg++;
+    if (deg===0) continue;
+    freeByZone[zoneAt(x,y)].push({x,y});
+  }
+  for (const a of freeByZone) shuffle(a,rnd);
+  for (const a of pathByZone) shuffle(a,rnd);
+
+  for (let k=0;k<MAP.NZ;k++){
+    const n=cfg.monsters[k]||0;
+    const bias=cfg.onPath[k]||0;
+    for (let i=0;i<n;i++){
+      let cell=null;
+      if (rnd()<bias && pathByZone[k].length) cell=pathByZone[k].pop();
+      else if (freeByZone[k].length)          cell=freeByZone[k].pop();
+      if (cell) spawnMonster('monster1', cell.x, cell.y);
+    }
+  }
+}
+
+function monsterCanPass(m,rx,ry,dir){
+  const t=sideType(rx,ry,dir);
+  if (t==='wall') return false;
+  if (t==='locked' && !m.cfg.canOpenLocked) return false;
+  return true;
+}
+const isOrthAdjacent=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y)===1;
+function dirBetween(f,t){
+  for (const d of DIRS) if (f.x+DIR[d].dx===t.x && f.y+DIR[d].dy===t.y) return d;
+  return null;
+}
+
+function bfsNextDir(m, from, to){
+  if (from.x===to.x && from.y===to.y) return null;
+  const W=MAP.w, idx=(x,y)=>y*W+x;
+  const prev=new Map(), seenSet=new Set([idx(from.x,from.y)]);
+  const q=[{x:from.x,y:from.y}];
+  for (let h=0; h<q.length; h++){
+    const cur=q[h];
+    for (const d of DIRS){
+      if (!monsterCanPass(m,cur.x,cur.y,d)) continue;
+      const nx=cur.x+DIR[d].dx, ny=cur.y+DIR[d].dy;
+      if (!inBounds(nx,ny)) continue;
+      const k=idx(nx,ny);
+      if (seenSet.has(k)) continue;
+      seenSet.add(k);
+      prev.set(k,{x:cur.x,y:cur.y,d});
+      if (nx===to.x && ny===to.y){
+        let cx=nx, cy=ny;
+        for(;;){
+          const p=prev.get(idx(cx,cy));
+          if (p.x===from.x && p.y===from.y) return p.d;
+          cx=p.x; cy=p.y;
+        }
+      }
+      q.push({x:nx,y:ny});
+    }
+  }
+  return null;
+}
+
+function setChase(m,room,reason,mark){
+  if (m.state!=='chase'){ m.alert=1.4; m.alertMark=mark; }
+  m.state='chase'; m.reason=reason;
+  m.targetRoom={x:room.x,y:room.y};
+  m.wanderTarget=null; m.wanderWait=0;
+}
+
+function updateMonsterSenses(m){
+  if (m.stun>0) return false;
+  const cfg=m.cfg, pr=playerRoomForAI();
+  if (pr.x===m.room.x && pr.y===m.room.y){ setChase(m,pr,'sight','!'); return true; }
+  if (cfg.sightAdjacent && isOrthAdjacent(m.room,pr)){
+    const d=dirBetween(m.room,pr);
+    if (!cfg.sightNeedsPassage || monsterCanPass(m,m.room.x,m.room.y,d)){
+      setChase(m,pr,'sight','!'); return true;
+    }
+  }
+  return false;
+}
+
+function onMonsterEnterRoom(m){
+  if (!m.cfg.noticeDoors) return;
+  let best=null,bestAngle=0;
+  for (const d of DIRS){
+    if (!monsterCanPass(m,m.room.x,m.room.y,d)) continue;
+    const key=doorKey(m.room.x,m.room.y,d);
+    if (key===m.ignoreDoorKey) continue;
+    const a=doorAnims.get(key);
+    if (!a || a.users.has(m)) continue;
+    if (Math.abs(a.angle)>bestAngle){ bestAngle=Math.abs(a.angle); best=d; }
+  }
+  if (best) setChase(m,{x:m.room.x+DIR[best].dx,y:m.room.y+DIR[best].dy},'trail','?');
+}
+
+function moveToward(m,tx,ty,speed,dt){
+  const dx=tx-m.x, dy=ty-m.y, dist=Math.hypot(dx,dy);
+  if (dist<0.5){ m.moving=0; return true; }
+  const step=Math.min(speed*dt,dist);
+  m.x+=dx/dist*step; m.y+=dy/dist*step; m.moving=speed;
+  let diff=Math.atan2(dy,dx)-m.facing;
+  while(diff>Math.PI) diff-=TAU;
+  while(diff<-Math.PI) diff+=TAU;
+  m.facing+=diff*Math.min(1,dt*8);
+  return step>=dist;
+}
+
+function updateMonster(m,dt){
+  const cfg=m.cfg;
+  if (m.alert>0) m.alert-=dt;
+  if (m.stun>0){ m.stun-=dt; m.moving=0; return; }
+
+  const far = Math.max(Math.abs(m.room.x-player.x), Math.abs(m.room.y-player.y)) > MONSTER_ACTIVE_RANGE;
+  if (far && !m.cross){ m.moving=0; return; }
+
+  updateMonsterSenses(m);
+
+  if (m.cross){
+    const cr=m.cross, dc=doorCenter(cr.from.x,cr.from.y,cr.dir);
+    if (!cr.entered && m.targetRoom && m.targetRoom.x===cr.from.x && m.targetRoom.y===cr.from.y){
+      releaseDoor(cr.key,m); m.cross=null; return;
+    }
+    if (cr.stage==='approach'){
+      if (cfg.canOpenDoors && Math.hypot(dc.x-m.x,dc.y-m.y)<ROOM_SIZE*0.45 && !cr.requested){
+        requestDoorOpen(cr.key, SWING_BY_DIR[cr.dir], m); cr.requested=true;
+      }
+      if (moveToward(m,dc.x,dc.y,cfg.chaseSpeed,dt)){
+        if (doorPassable(cr.key)) cr.stage='pass'; else m.moving=0;
+      }
+      return;
+    }
+    const ex=dc.x+DIR[cr.dir].dx*ROOM_SIZE*0.42;
+    const ey=dc.y+DIR[cr.dir].dy*ROOM_SIZE*0.42;
+    const done=moveToward(m,ex,ey,cfg.chaseSpeed,dt);
+    if (!cr.entered){
+      const axis=DIR[cr.dir].dx+DIR[cr.dir].dy;
+      const along=(DIR[cr.dir].dx!==0)?(m.x-dc.x):(m.y-dc.y);
+      if (along*axis>0){
+        cr.entered=true;
+        m.room={x:cr.to.x,y:cr.to.y};
+        m.ignoreDoorKey=cr.key;
+        if (!updateMonsterSenses(m)) onMonsterEnterRoom(m);
+      }
+    }
+    if (done){ releaseDoor(cr.key,m); m.cross=null; }
+    return;
+  }
+
+  const pr=playerRoomForAI();
+  if (pr.x===m.room.x && pr.y===m.room.y){
+    const p=playerWorld(), t=clampToRoom(p,m.room,14);
+    moveToward(m,t.x,t.y,cfg.chaseSpeed,dt);
+    if (!gameWon && Math.hypot(p.x-m.x,p.y-m.y)<cfg.catchRadius) onCatch(m);
+    return;
+  }
+
+  if (m.targetRoom && (m.targetRoom.x!==m.room.x || m.targetRoom.y!==m.room.y)){
+    const d=bfsNextDir(m,m.room,m.targetRoom);
+    if (d){
+      m.cross={ key:doorKey(m.room.x,m.room.y,d), dir:d,
+        from:{x:m.room.x,y:m.room.y},
+        to:{x:m.room.x+DIR[d].dx,y:m.room.y+DIR[d].dy},
+        stage:'approach', requested:false, entered:false };
+      return;
+    }
+    m.targetRoom=null;
+  }
+
+  m.state='idle'; m.reason=''; m.targetRoom=null; m.ignoreDoorKey=null;
+  if (m.wanderWait>0){ m.wanderWait-=dt; m.moving=0; return; }
+  if (!m.wanderTarget){
+    const mg=ROOM_SIZE*0.5-34;
+    m.wanderTarget={ x:roomCX(m.room.x)+(Math.random()*2-1)*mg,
+                     y:roomCY(m.room.y)+(Math.random()*2-1)*mg };
+  }
+  if (moveToward(m,m.wanderTarget.x,m.wanderTarget.y,cfg.wanderSpeed,dt)){
+    m.wanderTarget=null; m.wanderWait=0.4+Math.random()*1.6;
+  }
+}
+
+function onCatch(m){
+  caughtCount++; caughtEl.textContent=caughtCount;
+  flashMessage('Монстр вас настиг!');
+  if (m.cross) releaseDoor(m.cross.key,m);
+  m.cross=null;
+  m.room={x:m.home.x,y:m.home.y};
+  m.x=roomCX(m.home.x); m.y=roomCY(m.home.y);
+  m.state='idle'; m.reason=''; m.targetRoom=null;
+  m.wanderTarget=null; m.ignoreDoorKey=null;
+  m.stun=2.0; m.alert=0;
+}
+
+// ============================================================
+// 10. ТЕКСТУРЫ ПОЛА (LRU-кэш)
+// ============================================================
+const patternCache=new Map();
+
+function getRoomPattern(rx,ry){
+  const key=`${rx},${ry}`;
+  const hit=patternCache.get(key);
+  if (hit){ patternCache.delete(key); patternCache.set(key,hit); return hit; }
+
+  const off=document.createElement('canvas');
+  off.width=ROOM_SIZE; off.height=ROOM_SIZE;
+  const c=off.getContext('2d');
+  const rng=mulberry32(((rx*374761393 + ry*668265263 + WORLD_SEED) ^ 0x5bd1e995)|0);
+  const r=()=>rng();
+
+  c.strokeStyle='rgba(0,0,0,0.15)';
+  c.lineWidth=1;
+  const S=ROOM_SIZE;
+  const texType=Math.floor(r()*10);
+  const step=18+Math.floor(r()*32);
+  const line=(x1,y1,x2,y2)=>{c.beginPath();c.moveTo(x1,y1);c.lineTo(x2,y2);c.stroke();};
+  const parallels=(ang,st)=>{
+    const dx=Math.cos(ang),dy=Math.sin(ang),nx=-dy,ny=dx,maxD=S*1.2,len=S*1.5;
+    for(let d=-maxD;d<maxD;d+=st){
+      const px=S/2+nx*d, py=S/2+ny*d;
+      line(px-dx*len,py-dy*len,px+dx*len,py+dy*len);
+    }
+  };
+
+  if (texType===0){ for(let i=step;i<S;i+=step){ line(i,0,i,S); line(0,i,S,i);} }
+  else if (texType===1){ parallels(0.3+r()*1.0, step); }
+  else if (texType===2){ const a=0.3+r()*0.6; parallels(a,step); parallels(a+Math.PI/2,step); }
+  else if (texType===3){
+    const bh=14+Math.floor(r()*16), bw=28+Math.floor(r()*34);
+    for(let row=0;row*bh<S;row++){
+      const y=row*bh; line(0,y,S,y);
+      const o=(row%2)*(bw/2);
+      for(let x=o;x<S;x+=bw) line(x,y,x,y+bh);
+    }
+  }
+  else if (texType===4){
+    const rs=14+Math.floor(r()*24);
+    for(let rad=rs;rad<S*0.85;rad+=rs){c.beginPath();c.arc(S/2,S/2,rad,0,TAU);c.stroke();}
+  }
+  else if (texType===5){
+    const sl=14+Math.floor(r()*14);
+    for(let row=-2;row*sl<S+sl*2;row++)
+      for(let col=-2;col*sl<S+sl*2;col++){
+        const bx=col*sl,by=row*sl;
+        if((row+col)%2===0) line(bx,by,bx+sl,by+sl); else line(bx+sl,by,bx,by+sl);
+      }
+  }
+  else if (texType===6){
+    const hr=13+Math.floor(r()*16), hh=hr*Math.sqrt(3), hw=hr*2;
+    for(let row=-1;row*hh*0.5<S+hh;row++)
+      for(let col=-1;col*hw*0.75<S+hw;col++){
+        const ccx=col*hw*0.75+((row%2)?hw*0.375:0), ccy=row*hh*0.5;
+        c.beginPath();
+        for(let i=0;i<6;i++){
+          const a=(i/6)*TAU-Math.PI/6;
+          const x=ccx+Math.cos(a)*hr, y=ccy+Math.sin(a)*hr;
+          if(i===0)c.moveTo(x,y); else c.lineTo(x,y);
+        }
+        c.closePath(); c.stroke();
+      }
+  }
+  else if (texType===7){
+    const amp=4+r()*10, fr=0.015+r()*0.04, ph=r()*TAU, ws=16+Math.floor(r()*26);
+    for(let y=ws;y<S;y+=ws){
+      c.beginPath();
+      for(let x=0;x<=S;x+=3){
+        const wy=y+Math.sin(x*fr+ph)*amp;
+        if(x===0)c.moveTo(x,wy); else c.lineTo(x,wy);
+      }
+      c.stroke();
+    }
+  }
+  else if (texType===8){
+    parallels(0.4+r()*0.4, 20+Math.floor(r()*20));
+    parallels(-(0.4+r()*0.4), 20+Math.floor(r()*20));
+  }
+  else {
+    const tw=20+Math.floor(r()*20), th=16+Math.floor(r()*16);
+    for(let row=-1;row*th<S+th;row++){
+      const o=(row%2)*(tw/2);
+      for(let col=-1;col*tw<S+tw;col++){
+        c.beginPath(); c.arc(col*tw+o+tw/2,row*th+th,tw/2,Math.PI,TAU); c.stroke();
+      }
+    }
+  }
+
+  patternCache.set(key,off);
+  if (patternCache.size>PATTERN_CACHE_MAX){
+    const oldest=patternCache.keys().next().value;
+    patternCache.delete(oldest);
+  }
+  return off;
+}
+
+function roomColor(x,y){
+  const n=((x*73856093)^(y*19349663)^WORLD_SEED);
+  const hue=((n%360)+360)%360;
+  const z=zoneAt(x,y);
+  const lig = 47 - z*4.5;          // к краю темнеет
+  const sat = 34 - z*4;            // и обесцвечивается
+  return `hsl(${hue}, ${sat}%, ${lig}%)`;
+}
+
+// ============================================================
+// 11. РЕНДЕР ИГРОВОГО ПОЛЯ
+// ============================================================
+const canvas=document.getElementById('game');
+const ctx=canvas.getContext('2d');
+const posEl=document.getElementById('pos');
+const zoneEl=document.getElementById('zone');
+const exploredEl=document.getElementById('explored');
+const caughtEl=document.getElementById('caught');
+const msgEl=document.getElementById('msg');
+
+function alphaForWorld(wx,wy){
+  const d=Math.hypot((wx-camX)/ROOM_SIZE,(wy-camY)/ROOM_SIZE);
+  return clamp(1-0.22*d,0.42,1);
+}
+
+function render(time){
+  ctx.fillStyle='#000';
+  ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE);
+
+  const visible=[], half=ROOM_SIZE/2;
+  for (let ry=player.y-3; ry<=player.y+3; ry++){
+    for (let rx=player.x-3; rx<=player.x+3; rx++){
+      if (!inBounds(rx,ry)) continue;
+      const cx=roomCX(rx), cy=roomCY(ry);
+      const l=sx(cx-half), t=sy(cy-half);
+      if (l>CANVAS_SIZE||t>CANVAS_SIZE||l+ROOM_SIZE<0||t+ROOM_SIZE<0) continue;
+      visible.push({rx,ry,cx,cy,l,t,alpha:alphaForWorld(cx,cy)});
+    }
+  }
+
+  for (const r of visible){
+    ctx.save();
+    ctx.globalAlpha=r.alpha;
+    ctx.fillStyle=roomColor(r.rx,r.ry);
+    ctx.fillRect(r.l,r.t,ROOM_SIZE,ROOM_SIZE);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(r.l,r.t,ROOM_SIZE,ROOM_SIZE); ctx.clip();
+    ctx.drawImage(getRoomPattern(r.rx,r.ry),r.l,r.t);
+    ctx.restore();
+    ctx.restore();
+    if (r.rx===MAP.exit.x && r.ry===MAP.exit.y) drawExitGate(r,time);
+  }
+
+  for (const r of visible) drawRoomWalls(r);
+
+  const keys=new Set();
+  for (const r of visible)
+    for (const side of DIRS)
+      if (sideType(r.rx,r.ry,side)!=='wall') keys.add(doorKey(r.rx,r.ry,side));
+  for (const k of keys) drawDoorLeaf(k);
+
+  for (const m of monsters){
+    if (Math.max(Math.abs(m.room.x-player.x),Math.abs(m.room.y-player.y))>3) continue;
+    drawMonster(m,time);
+  }
+
+  drawFog();
+
+  ctx.fillStyle='#fff';
+  ctx.shadowColor='rgba(255,255,255,0.7)'; ctx.shadowBlur=10;
+  ctx.beginPath(); ctx.arc(CANVAS_SIZE/2,CANVAS_SIZE/2,6,0,TAU); ctx.fill();
+  ctx.shadowBlur=0;
+
+  if (DEBUG) drawDebug();
+  if (gameWon) drawWinOverlay(time);
+}
+
+function drawExitGate(r,time){
+  const d=MAP.exitDir, pulse=0.55+0.45*Math.sin(time*3);
+  const cx=r.l+ROOM_SIZE/2, cy=r.t+ROOM_SIZE/2;
+  let gx=cx, gy=cy;
+  if (d==='N') gy=r.t; else if (d==='S') gy=r.t+ROOM_SIZE;
+  else if (d==='W') gx=r.l; else gx=r.l+ROOM_SIZE;
+
+  ctx.save();
+  const g=ctx.createRadialGradient(gx,gy,4,gx,gy,ROOM_SIZE*0.7);
+  g.addColorStop(0,`rgba(140,255,140,${0.55*pulse})`);
+  g.addColorStop(0.5,`rgba(90,220,110,${0.18*pulse})`);
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=g;
+  ctx.beginPath(); ctx.arc(gx,gy,ROOM_SIZE*0.7,0,TAU); ctx.fill();
+
+  ctx.strokeStyle=`rgba(170,255,170,${0.8*pulse})`;
+  ctx.lineWidth=7; ctx.lineCap='round';
+  ctx.beginPath();
+  if (d==='N'||d==='S'){ ctx.moveTo(gx-DOOR_WIDTH/2,gy); ctx.lineTo(gx+DOOR_WIDTH/2,gy); }
+  else { ctx.moveTo(gx,gy-DOOR_WIDTH/2); ctx.lineTo(gx,gy+DOOR_WIDTH/2); }
+  ctx.stroke();
+
+  ctx.fillStyle='rgba(190,255,190,0.9)';
+  ctx.font='bold 15px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('ВЫХОД', cx, cy+5);
+  ctx.restore();
+}
+
+function drawRoomWalls(r){
+  const x0=r.l, y0=r.t;
+  for (const side of DIRS){
+    const t=sideType(r.rx,r.ry,side);
+    let ax,ay,bx,by;
+    if (side==='N'){ax=x0;ay=y0;bx=x0+ROOM_SIZE;by=y0;}
+    if (side==='S'){ax=x0;ay=y0+ROOM_SIZE;bx=x0+ROOM_SIZE;by=y0+ROOM_SIZE;}
+    if (side==='E'){ax=x0+ROOM_SIZE;ay=y0;bx=x0+ROOM_SIZE;by=y0+ROOM_SIZE;}
+    if (side==='W'){ax=x0;ay=y0;bx=x0;by=y0+ROOM_SIZE;}
+    if (t==='wall'){ strokeLine(ax,ay,bx,by,WALL_COLOR,4,r.alpha); continue; }
+    const mx=(ax+bx)/2,my=(ay+by)/2,len=Math.hypot(bx-ax,by-ay);
+    const ux=(bx-ax)/len,uy=(by-ay)/len;
+    strokeLine(ax,ay,mx-ux*DOOR_WIDTH/2,my-uy*DOOR_WIDTH/2,WALL_COLOR,4,r.alpha);
+    strokeLine(mx+ux*DOOR_WIDTH/2,my+uy*DOOR_WIDTH/2,bx,by,WALL_COLOR,4,r.alpha);
+  }
+}
+
+function drawDoorLeaf(key){
+  const g=doorGeom(key), a=doorAnims.get(key), angle=a?a.angle:0;
+  const p1x=sx(g.p1x),p1y=sy(g.p1y),p2x=sx(g.p2x),p2y=sy(g.p2y);
+  const rad=angle*Math.PI/180, vx=p2x-p1x, vy=p2y-p1y;
+  const c=Math.cos(rad), s=Math.sin(rad);
+  const hx=p1x+vx*c-vy*s, hy=p1y+vx*s+vy*c;
+  const color=doorTypeByKey(key)==='locked'?DOOR_LOCKED_COLOR:DOOR_COLOR;
+  ctx.save();
+  ctx.globalAlpha=Math.max(alphaForWorld(g.mx,g.my),0.7);
+  ctx.strokeStyle=color; ctx.lineWidth=7; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(p1x,p1y); ctx.lineTo(hx,hy); ctx.stroke();
+  ctx.fillStyle=color; ctx.beginPath(); ctx.arc(hx,hy,4.5,0,TAU); ctx.fill();
+  ctx.fillStyle='#000'; ctx.beginPath(); ctx.arc(p1x,p1y,3,0,TAU); ctx.fill();
+  ctx.restore();
+}
+
+function strokeLine(ax,ay,bx,by,color,w,alpha){
+  ctx.save(); ctx.globalAlpha=alpha;
+  ctx.strokeStyle=color; ctx.lineWidth=w;
+  ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(bx,by); ctx.stroke();
+  ctx.restore();
+}
+
+function drawFog(){
+  const c=CANVAS_SIZE/2;
+  const g=ctx.createRadialGradient(c,c,ROOM_SIZE*0.45,c,c,ROOM_SIZE*1.95);
+  g.addColorStop(0.00,'rgba(0,0,0,0)');
+  g.addColorStop(0.35,'rgba(0,0,0,0.28)');
+  g.addColorStop(0.65,'rgba(0,0,0,0.70)');
+  g.addColorStop(0.85,'rgba(0,0,0,0.90)');
+  g.addColorStop(1.00,'rgba(0,0,0,0.98)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE);
+}
+
+function drawMonster(m,time){
+  const px=sx(m.x),py=sy(m.y);
+  if (px<-60||py<-60||px>CANVAS_SIZE+60||py>CANVAS_SIZE+60) return;
+  const alpha=alphaForWorld(m.x,m.y);
+  m.cfg.draw(m,px,py,alpha,time);
+  if (m.alert>0){
+    ctx.save();
+    ctx.globalAlpha=alpha*Math.min(1,m.alert*2);
+    ctx.fillStyle=m.alertMark==='!'?'#ff5555':'#ffcc55';
+    ctx.font='bold 20px sans-serif'; ctx.textAlign='center';
+    ctx.fillText(m.alertMark,px,py-m.cfg.size*2.2);
+    ctx.restore();
+  }
+}
+
+function drawMonster1(m,px,py,alpha,time){
+  const cfg=m.cfg,R=cfg.size,chasing=(m.state==='chase');
+  if (chasing && m.stun<=0){
+    const pulse=0.35+0.15*Math.sin(time*6);
+    const g=ctx.createRadialGradient(px,py,R*0.5,px,py,R*3.4);
+    g.addColorStop(0,cfg.auraColor+(0.30*pulse)+')');
+    g.addColorStop(1,cfg.auraColor+'0)');
+    ctx.save(); ctx.globalAlpha=alpha; ctx.fillStyle=g;
+    ctx.beginPath(); ctx.arc(px,py,R*3.4,0,TAU); ctx.fill(); ctx.restore();
+  }
+  ctx.save(); ctx.globalAlpha=alpha; ctx.translate(px,py); ctx.rotate(m.facing);
+  ctx.fillStyle='rgba(0,0,0,0.35)';
+  ctx.beginPath(); ctx.ellipse(2,3,R*1.15,R*0.95,0,0,TAU); ctx.fill();
+  const gait=time*(m.moving>1?(chasing?11:6):1.5);
+  ctx.strokeStyle=cfg.legColor; ctx.lineWidth=2.6; ctx.lineCap='round';
+  for (const sgn of [-1,1]) for (let i=0;i<3;i++){
+    const a=sgn*(0.75+i*0.72)+Math.sin(gait+i*1.25+(sgn>0?Math.PI:0))*0.26;
+    ctx.beginPath(); ctx.moveTo(0,0);
+    ctx.lineTo(Math.cos(a)*R*1.2,Math.sin(a)*R*1.2);
+    ctx.lineTo(Math.cos(a+sgn*0.45)*R*2.1,Math.sin(a+sgn*0.45)*R*2.1);
+    ctx.stroke();
+  }
+  ctx.fillStyle=cfg.bodyColor;
+  ctx.beginPath(); ctx.ellipse(-R*0.25,0,R*1.05,R*0.85,0,0,TAU); ctx.fill();
+  ctx.fillStyle=cfg.shellColor;
+  ctx.beginPath(); ctx.ellipse(-R*0.15,0,R*0.72,R*0.58,0,0,TAU); ctx.fill();
+  ctx.fillStyle=cfg.bodyColor;
+  ctx.beginPath(); ctx.arc(R*0.85,0,R*0.52,0,TAU); ctx.fill();
+  ctx.strokeStyle=cfg.legColor; ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(R*1.15,-R*0.28); ctx.lineTo(R*1.6,-R*0.12);
+  ctx.moveTo(R*1.15,R*0.28);  ctx.lineTo(R*1.6,R*0.12);
+  ctx.stroke();
+  ctx.fillStyle=cfg.eyeColor; ctx.globalAlpha=alpha*(chasing?1:0.75);
+  ctx.beginPath(); ctx.arc(R*1.02,-R*0.24,R*0.17,0,TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(R*1.02, R*0.24,R*0.17,0,TAU); ctx.fill();
+  ctx.restore();
+}
+
+function drawWinOverlay(time){
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.72)';
+  ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE);
+  ctx.textAlign='center';
+  ctx.fillStyle='#8ef08e';
+  ctx.font='bold 46px sans-serif';
+  ctx.fillText('ВЫХОД НАЙДЕН', CANVAS_SIZE/2, CANVAS_SIZE/2-20);
+  ctx.fillStyle='#cfd8e2'; ctx.font='17px sans-serif';
+  ctx.fillText(`Комнат пройдено: ${visited.size} из ${MAP.w*MAP.h}`, CANVAS_SIZE/2, CANVAS_SIZE/2+22);
+  ctx.fillText(`Кратчайший путь был ${MAP.pathLen} шагов · пойман ${caughtCount} раз`, CANVAS_SIZE/2, CANVAS_SIZE/2+48);
+  ctx.fillStyle='#8a94a3'; ctx.font='14px sans-serif';
+  ctx.fillText('«Новый» — сгенерировать другой лабиринт', CANVAS_SIZE/2, CANVAS_SIZE/2+86);
+  ctx.restore();
+}
+
+function drawDebug(){
+  const pr=playerRoomForAI();
+  const near=monsters.filter(m=>Math.max(Math.abs(m.room.x-player.x),Math.abs(m.room.y-player.y))<=MONSTER_ACTIVE_RANGE);
+  const lines=[
+    `сид ${MAP.seed} · ${MAP.cfg.label} · ${MAP.w}×${MAP.h}`,
+    `игрок(${player.x},${player.y}) ИИ(${pr.x},${pr.y}) зона ${zoneAt(player.x,player.y)}`,
+    `выход(${MAP.exit.x},${MAP.exit.y}) путь ${MAP.pathLen} · до выхода ${MAP.dist[player.y*MAP.w+player.x]}`,
+    `монстров ${monsters.length}, активных ${near.length} · дверей ${doorAnims.size}`,
+  ];
+  near.slice(0,6).forEach((m,i)=>{
+    lines.push(`M${i} ${m.state.padEnd(5)} ${m.reason.padEnd(5)} r(${m.room.x},${m.room.y})`+
+      ` t(${m.targetRoom?m.targetRoom.x+','+m.targetRoom.y:'—'})`+(m.cross?` ×${m.cross.dir}`:''));
+  });
+  const w=360,h=12+lines.length*15;
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.85)'; ctx.fillRect(8,8,w,h);
+  ctx.strokeStyle='#4a4'; ctx.lineWidth=1; ctx.strokeRect(8.5,8.5,w,h);
+  ctx.font='12px monospace'; ctx.textAlign='left'; ctx.fillStyle='#9f9';
+  lines.forEach((s,i)=>ctx.fillText(s,16,26+i*15));
+  ctx.restore();
+}
+
+// ============================================================
+// 12. КАРТА
+// ============================================================
+const mapCanvas=document.getElementById('mapCanvas');
+const mapCtx=mapCanvas.getContext('2d');
+const MAP_PX=380;
+let mapMode='local', mapDirty=true, mapTimer=0;
+
+function cellState(x,y){
+  if (!inBounds(x,y)) return 'out';
+  const k=`${x},${y}`;
+  if (visited.has(k)) return 'visited';
+  if (seen.has(k))    return 'seen';
+  return 'fog';
+}
+
+function drawMap(){
+  mapCtx.fillStyle='#0b0d10';
+  mapCtx.fillRect(0,0,MAP_PX,MAP_PX);
+  if (mapMode==='local') drawLocalMap(); else drawFullMap();
+}
+
+function drawLocalMap(){
+  const R=10, n=2*R+1;
+  const cs=Math.floor(MAP_PX/n);
+  const ox=(MAP_PX-cs*n)/2, oy=ox;
+  const gap=Math.max(4,Math.round(cs*0.34));
+  const seg=(cs-gap)/2;
+
+  for (let dy=-R;dy<=R;dy++) for (let dx=-R;dx<=R;dx++){
+    const rx=player.x+dx, ry=player.y+dy;
+    const st=cellState(rx,ry);
+    if (st==='out'||st==='fog') continue;
+    const px=ox+(dx+R)*cs, py=oy+(dy+R)*cs;
+
+    if (st==='visited'){
+      const onSol = SHOW_SOLUTION && MAP.solutionSet.has(`${rx},${ry}`);
+      mapCtx.fillStyle = onSol ? '#4a6b45' : '#39424f';
+      mapCtx.fillRect(px,py,cs,cs);
+    } else {
+      mapCtx.fillStyle='#191f27';
+      mapCtx.fillRect(px,py,cs,cs);
+    }
+
+    mapCtx.strokeStyle = st==='visited' ? '#657588' : '#2b3440';
+    mapCtx.lineWidth=1.4;
+    for (const d of DIRS){
+      const isWall = MAP.rooms[ry][rx][d]==='wall';
+      let x1,y1,x2,y2;
+      if (d==='N'){x1=px;y1=py;x2=px+cs;y2=py;}
+      if (d==='S'){x1=px;y1=py+cs;x2=px+cs;y2=py+cs;}
+      if (d==='W'){x1=px;y1=py;x2=px;y2=py+cs;}
+      if (d==='E'){x1=px+cs;y1=py;x2=px+cs;y2=py+cs;}
+      mapCtx.beginPath();
+      if (isWall){ mapCtx.moveTo(x1,y1); mapCtx.lineTo(x2,y2); }
+      else {
+        const ux=(x2-x1)/cs, uy=(y2-y1)/cs;
+        mapCtx.moveTo(x1,y1); mapCtx.lineTo(x1+ux*seg,y1+uy*seg);
+        mapCtx.moveTo(x2-ux*seg,y2-uy*seg); mapCtx.lineTo(x2,y2);
+      }
+      mapCtx.stroke();
+    }
+
+    if (rx===MAP.exit.x && ry===MAP.exit.y){
+      mapCtx.fillStyle='#7ee06a';
+      mapCtx.fillRect(px+cs*0.25,py+cs*0.25,cs*0.5,cs*0.5);
+    }
+  }
+
+  // монстры в поле зрения
+  for (const m of monsters){
+    const dx=m.room.x-player.x, dy=m.room.y-player.y;
+    if (Math.max(Math.abs(dx),Math.abs(dy))>1) continue;
+    mapCtx.fillStyle='#d84a4a';
+    mapCtx.beginPath();
+    mapCtx.arc(ox+(dx+R)*cs+cs/2, oy+(dy+R)*cs+cs/2, cs*0.22, 0, TAU);
+    mapCtx.fill();
+  }
+
+  // игрок
+  mapCtx.fillStyle='#fff';
+  mapCtx.beginPath();
+  mapCtx.arc(ox+R*cs+cs/2, oy+R*cs+cs/2, cs*0.26, 0, TAU);
+  mapCtx.fill();
+}
+
+function drawFullMap(){
+  const cs=Math.max(2,Math.floor(MAP_PX/MAP.w));
+  const ox=(MAP_PX-cs*MAP.w)/2, oy=(MAP_PX-cs*MAP.h)/2;
+  const inset=cs>=6?1:0;
+
+  // фон зон — тонкий намёк на структуру
+  mapCtx.globalAlpha=0.35;
+  for (let z=0;z<MAP.NZ;z++){
+    const b=MAP.bounds[z];
+    const px=ox+(MAP.cx-b)*cs, py=oy+(MAP.cy-b)*cs, s=(2*b+1)*cs;
+    mapCtx.strokeStyle='#1c2430'; mapCtx.lineWidth=1;
+    mapCtx.strokeRect(px,py,s,s);
+  }
+  mapCtx.globalAlpha=1;
+
+  for (let y=0;y<MAP.h;y++) for (let x=0;x<MAP.w;x++){
+    const st=cellState(x,y);
+    if (st==='fog') continue;
+    const px=ox+x*cs, py=oy+y*cs;
+    if (st==='visited'){
+      const onSol=SHOW_SOLUTION && MAP.solutionSet.has(`${x},${y}`);
+      mapCtx.fillStyle=onSol?'#5b8a52':'#4d5b6e';
+    } else mapCtx.fillStyle='#242c37';
+    mapCtx.fillRect(px+inset,py+inset,cs-inset*2,cs-inset*2);
+
+    if (inset && st==='visited'){
+      mapCtx.fillStyle='#4d5b6e';
+      for (const d of ['E','S']){
+        if (MAP.rooms[y][x][d]==='wall') continue;
+        const nx=x+DIR[d].dx, ny=y+DIR[d].dy;
+        if (cellState(nx,ny)==='fog') continue;
+        if (d==='E') mapCtx.fillRect(px+cs-inset,py+inset,inset*2,cs-inset*2);
+        else         mapCtx.fillRect(px+inset,py+cs-inset,cs-inset*2,inset*2);
+      }
+    }
+  }
+
+  if (SHOW_SOLUTION || cellState(MAP.exit.x,MAP.exit.y)!=='fog'){
+    mapCtx.fillStyle='#7ee06a';
+    mapCtx.fillRect(ox+MAP.exit.x*cs-1, oy+MAP.exit.y*cs-1, cs+2, cs+2);
+  }
+
+  // рамка окрестностей
+  mapCtx.strokeStyle='rgba(255,255,255,0.22)'; mapCtx.lineWidth=1;
+  mapCtx.strokeRect(ox+(player.x-10)*cs, oy+(player.y-10)*cs, 21*cs, 21*cs);
+
+  mapCtx.fillStyle='#fff';
+  mapCtx.beginPath();
+  mapCtx.arc(ox+player.x*cs+cs/2, oy+player.y*cs+cs/2, Math.max(2,cs*0.55), 0, TAU);
+  mapCtx.fill();
+}
+
+// ============================================================
+// 13. УПРАВЛЕНИЕ И UI
+// ============================================================
+const diffSel=document.getElementById('diffSel');
+const seedOut=document.getElementById('seedOut');
+
+function newGame(diffKey, seed){
+  const cfg=DIFFICULTY[diffKey];
+  WORLD_SEED = (seed===undefined) ? (Math.random()*0x7fffffff)|0 : seed;
+  MAP = generateMaze(cfg, WORLD_SEED);
+
+  patternCache.clear();
+  doorAnims.clear();
+  visited.clear(); seen.clear();
+  gameWon=false; move=null;
+  visual.offsetX=0; visual.offsetY=0;
+
+  player.x=MAP.start.x; player.y=MAP.start.y;
+  camX=roomCX(player.x); camY=roomCY(player.y);
+
+  placeMonsters(mulberry32(WORLD_SEED ^ 0x9e3779b9));
+  enterRoom(player.x,player.y);
+
+  seedOut.textContent=String(WORLD_SEED);
+  mapDirty=true;
+  flashMessage(`Лабиринт ${MAP.w}×${MAP.h}, до выхода минимум ${MAP.pathLen} шагов`);
+}
+
+function onWin(){
+  if (gameWon) return;
+  gameWon=true;
+  flashMessage('Вы нашли выход!');
+}
+
+canvas.addEventListener('click',(e)=>{
+  const rect=canvas.getBoundingClientRect();
+  const mx=(e.clientX-rect.left)*(canvas.width/rect.width);
+  const my=(e.clientY-rect.top)*(canvas.height/rect.height);
+  const dx=Math.round((mx-CANVAS_SIZE/2)/ROOM_SIZE);
+  const dy=Math.round((my-CANVAS_SIZE/2)/ROOM_SIZE);
+  if (Math.abs(dx)+Math.abs(dy)!==1) return;
+  const dir=DIRS.find(d=>DIR[d].dx===dx&&DIR[d].dy===dy);
+  if (dir) startMove(dir);
+});
+
+const dbgBtn=document.getElementById('dbgBtn');
+const solBtn=document.getElementById('solBtn');
+const mLocal=document.getElementById('modeLocal');
+const mFull=document.getElementById('modeFull');
+
+function setMapMode(mode){
+  mapMode=mode; mapDirty=true;
+  mLocal.classList.toggle('on',mode==='local');
+  mFull.classList.toggle('on',mode==='full');
+}
+mLocal.onclick=()=>{setMapMode('local');mLocal.blur();};
+mFull.onclick =()=>{setMapMode('full'); mFull.blur();};
+
+dbgBtn.onclick=()=>{ DEBUG=!DEBUG; dbgBtn.classList.toggle('on',DEBUG); dbgBtn.blur(); };
+solBtn.onclick=()=>{
+  SHOW_SOLUTION=!SHOW_SOLUTION;
+  solBtn.classList.toggle('on',SHOW_SOLUTION);
+  solBtn.textContent = SHOW_SOLUTION?'Скрыть решение':'Показать решение';
+  mapDirty=true; solBtn.blur();
+};
+document.getElementById('newBtn').onclick=()=>{ newGame(diffSel.value); };
+document.getElementById('copySeed').onclick=()=>{
+  navigator.clipboard?.writeText(String(WORLD_SEED));
+  flashMessage('Сид скопирован');
+};
+
+document.addEventListener('keydown',(e)=>{
+  if (e.code==='KeyD'){ e.preventDefault(); dbgBtn.click(); return; }
+  if (e.code==='KeyM'){ e.preventDefault(); setMapMode(mapMode==='local'?'full':'local'); return; }
+  const km={
+    ArrowUp:'N',ArrowDown:'S',ArrowRight:'E',ArrowLeft:'W',
+    KeyW:'N',KeyS:'S',KeyD_:'E',KeyA:'W',
+  };
+  let dir=km[e.key]||km[e.code];
+  if (e.code==='KeyW') dir='N';
+  if (e.code==='KeyS') dir='S';
+  if (e.code==='KeyA') dir='W';
+  if (!dir) return;
+  e.preventDefault();
+  startMove(dir);
+});
+
+let messageTimer=null;
+function flashMessage(text){
+  msgEl.textContent=' · '+text;
+  clearTimeout(messageTimer);
+  messageTimer=setTimeout(()=>{msgEl.textContent='';},2200);
+}
+
+// ============================================================
+// 14. ГЛАВНЫЙ ЦИКЛ
+// ============================================================
+newGame('normal');
+
+let lastTime=performance.now();
+function loop(now){
+  const dt=Math.min((now-lastTime)/1000,0.05);
+  lastTime=now;
+
+  updatePlayer(dt);
+  camX=roomCX(player.x)+visual.offsetX;
+  camY=roomCY(player.y)+visual.offsetY;
+
+  for (const m of monsters) updateMonster(m,dt);
+  updateDoors(dt);
+
+  render(now/1000);
+
+  mapTimer+=dt;
+  if (mapDirty || mapTimer>0.1){ drawMap(); mapDirty=false; mapTimer=0; }
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+
+</body>
+</html>
