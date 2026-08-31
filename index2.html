@@ -35,7 +35,7 @@
 // ============================================================
 const CANVAS_SIZE = 800;
 const ROOM_SIZE   = 250;
-const MAP_W = 5, MAP_H = 5;
+const MAP_W = 15, MAP_H = 15;
 
 const T_OPEN  = 0.6;
 const T_CLOSE = 0.6;
@@ -258,7 +258,7 @@ const MONSTER_TYPES = {
 
 const monsters = [];
 let caughtCount = 0;
-const SPAWNS = [ ['monster1',0,0], ['monster1',4,3] ];
+const SPAWNS = [ ['monster1',0,0], ['monster1',4,3], ['monster1',8,3], ['monster1',5,7], ['monster1',9,12], ['monster1',11,14] ];
 
 function spawnMonster(typeId, rx, ry){
   const cfg = MONSTER_TYPES[typeId];
