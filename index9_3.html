@@ -1,0 +1,4280 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Лабиринт — v14 (Охотник, сложность-тюнинг, ключи, спавн)</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; background:#0c0e11; color:#ddd; font-family:sans-serif; padding:14px; }
+  #app { display:flex; gap:18px; align-items:flex-start; justify-content:center; }
+  #side { width:396px; flex:0 0 396px; }
+  #stage { flex:0 1 auto; }
+  @media (max-width:1240px){
+    #app { flex-direction:column; align-items:center; }
+    #side { order:2; width:min(396px,94vw); flex:none; }
+    #stage { order:1; }
+  }
+
+  #hud {
+    display:flex; align-items:center; gap:9px; min-height:40px; padding:5px 12px;
+    background:#14171c; border:1px solid #2c313a; border-bottom:none;
+    border-radius:4px 4px 0 0; width:min(800px,94vw); font-size:13px; flex-wrap:wrap;
+  }
+  .chip {
+    display:inline-flex; align-items:center; gap:5px; padding:3px 9px;
+    background:#1c2027; border:1px solid #333a45; border-radius:13px;
+    font-size:13px; color:#c8cfd8; white-space:nowrap;
+  }
+  .chip b { color:#fff; font-weight:600; }
+  .chip.stars  { color:#ffd451; border-color:#5a4a18; }
+  .chip.stars.empty { color:#8a4444; border-color:#4a2222; }
+  .chip.coins  { color:#5fc98a; border-color:#1e4a33; }
+  .chip.gren   { color:#c2c8d0; border-color:#3a3f47; cursor:pointer; }
+  .chip.gren:hover { background:#2a2f38; }
+  .chip.gren.off { opacity:.35; cursor:default; }
+  .chip.tele   { color:#7ac4f5; border-color:#1e3a52; cursor:pointer; }
+  .chip.tele:hover { background:#2a2f38; }
+  .chip.tele.off { opacity:.35; cursor:default; }
+  .keyslot { width:15px; height:15px; border-radius:3px; border:1px solid #333a45; background:#1a1d23; }
+  .keyslot.has { border-color:transparent; box-shadow:0 0 7px currentColor; }
+  #hud .sep { width:1px; height:20px; background:#2c313a; }
+  #hud .lbl { color:#6f7887; font-size:10px; letter-spacing:.6px; }
+
+  #game { background:#000; border:2px solid #3a3f46; border-top-color:#2c313a;
+          border-radius:0 0 3px 3px; cursor:pointer; display:block;
+          width:min(800px,94vw); height:auto; aspect-ratio:1/1; }
+
+  .panel { background:#14171c; border:1px solid #2c313a; border-radius:6px; padding:10px; margin-bottom:10px; }
+  .panel.dim { opacity:.45; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .row + .row { margin-top:8px; }
+  label { font-size:12px; color:#8a94a3; }
+
+  button, select {
+    background:#1e222a; color:#c8cfd8; border:1px solid #3b424d; border-radius:4px;
+    padding:6px 11px; font-size:12px; font-family:inherit; cursor:pointer;
+  }
+  button:hover:not(:disabled) { background:#262c36; color:#fff; }
+  button:disabled { opacity:.4; cursor:default; }
+  button.on { background:#26402c; border-color:#4a7a53; color:#bfe8c8; }
+  button.danger { border-color:#6b3030; color:#e0a0a0; }
+  button.buy { flex:1; text-align:left; display:flex; justify-content:space-between; gap:10px; }
+  button.buy span.pr { color:#5fc98a; }
+
+  .chip.apple { color:#ff8b77; border-color:#5a241c; cursor:pointer; }
+  .chip.apple:hover { background:#2a2f38; }
+  .chip.apple.off { opacity:.35; cursor:default; }
+  input[type=text] {
+    background:#1e222a; color:#c8cfd8; border:1px solid #3b424d; border-radius:4px;
+    padding:6px 8px; width:110px; font-family:inherit; font-size:12px;
+  }
+  #pauseOverlay { position:fixed; inset:0; background:rgba(0,0,0,.7); display:none;
+    align-items:center; justify-content:center; z-index:60; }
+  #pauseOverlay.show { display:flex; }
+  #pauseBox { background:#171b21; border:1px solid #39414c; border-radius:8px;
+    padding:22px 26px; min-width:300px; text-align:center; }
+  #pauseBox h4 { margin:0 0 12px; font-size:20px; color:#e8eef5; letter-spacing:2px; }
+  #pauseBox p { margin:0 0 4px; font-size:12px; color:#8a94a3; line-height:1.6; }
+  #pauseBox .row { justify-content:center; margin-top:14px; }
+  #pauseBox .row + .row { margin-top:8px; }
+  #pauseInfo b { color:#cfd8e2; }
+  #mapCanvas { background:#0b0d10; border:1px solid #2c313a; border-radius:4px;
+               display:block; width:100%; height:auto; aspect-ratio:1/1; }
+
+  #info { margin-top:9px; font-size:13px; text-align:center; min-height:20px; color:#aab; }
+  #msg { color:#ffd479; }
+  .stat { display:inline-block; margin:0 7px; }
+  .stat b { color:#e8eef5; font-weight:600; }
+  #legend { font-size:11px; color:#6f7887; line-height:1.85; margin-top:8px; }
+  .sw { display:inline-block; width:11px; height:11px; border-radius:2px; vertical-align:-1px; margin-right:3px; }
+  #hint { margin-top:6px; font-size:11px; color:#69707d; text-align:center; }
+  h3 { margin:0 0 8px; font-size:13px; color:#8a94a3; font-weight:600; letter-spacing:.4px; }
+  code { color:#7fa6d0; font-size:11px; }
+
+  #modal { position:fixed; inset:0; background:rgba(0,0,0,.72); display:none;
+           align-items:center; justify-content:center; z-index:50; }
+  #modal.show { display:flex; }
+  #modalBox { background:#171b21; border:1px solid #39414c; border-radius:8px;
+              padding:22px 26px; max-width:420px; }
+  #modalBox h4 { margin:0 0 10px; font-size:16px; color:#e8eef5; }
+  #modalBox p { margin:0 0 16px; font-size:13px; line-height:1.6; color:#a8b2be; }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <aside id="side">
+    <div class="panel">
+      <h3>КАРТА</h3>
+      <div class="row">
+        <button id="modeLocal" class="on">Окрестности</button>
+        <button id="modeFull">Весь лабиринт</button>
+      </div>
+      <div class="row"><canvas id="mapCanvas" width="384" height="384"></canvas></div>
+      <div id="legend">
+        <span class="sw" style="background:#61707f"></span>пройдено
+        <span class="sw" style="background:#2b3542;margin-left:6px"></span>видел
+        <span class="sw" style="background:#ffd451;margin-left:6px"></span>звезда
+        <span class="sw" style="background:#5fc98a;margin-left:6px"></span>деньги<br>
+        <span class="sw" style="background:#2f3338"></span>граната
+        <span class="sw" style="background:#ff8b77;margin-left:6px"></span>яблоко
+        <span class="sw" style="background:#dfe6ee;margin-left:6px"></span>магазин
+        <span class="sw" style="background:#7ce0ff;margin-left:6px"></span>аномалия (бьёт монстров)
+        <span class="sw" style="background:#b07ae8;margin-left:6px"></span><span class="sw" style="background:#3fd0c8"></span><span class="sw" style="background:#f0509a"></span>ключи и двери<br>
+        <span class="sw" style="background:#b0172f"></span>Босс «Надзиратель» (убить — ~10 гранат)
+      </div>
+    </div>
+
+    <div class="panel" id="shopPanel">
+      <h3>МАГАЗИН</h3>
+      <div id="shopBody">
+        <div class="row" style="font-size:12px;color:#6f7887">Найдите комнату-магазин</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>ЛАБИРИНТ</h3>
+      <div class="row">
+        <label>Сложность</label>
+        <select id="diffSel">
+          <option value="easy">Лёгкий (625)</option>
+          <option value="normal" selected>Средний (1089)</option>
+          <option value="hard">Сложный (1681)</option>
+        </select>
+        <button id="newBtn">Новый</button>
+      </div>
+      <div class="row">
+        <label>Сид</label><code id="seedOut">—</code>
+        <button id="copySeed">копировать</button>
+      </div>
+      <div class="row">
+        <input id="seedIn" type="text" inputmode="numeric" placeholder="вставить сид…">
+        <button id="applySeed">Играть</button>
+      </div>
+      <div class="row">
+        <button id="dbgBtn">Отладка (F2)</button>
+        <button id="solBtn" class="danger">Решение</button>
+      </div>
+      <div class="row">
+        <button id="loadBtn">Загрузить</button>
+        <button id="pauseBtn">Пауза (P)</button>
+      </div>
+      <div class="row">
+        <label>Буфер хода</label>
+        <select id="bufSel">
+          <option value="0">выкл (как v10)</option>
+          <option value="0.25">250 мс</option>
+          <option value="0.5" selected>500 мс</option>
+          <option value="0.8">800 мс</option>
+          <option value="99">весь ход</option>
+        </select>
+        <button id="holdBtn">Удержание: выкл</button>
+      </div>
+    </div>
+
+    <div class="panel" id="cheatPanel">
+      <h3>ТЕСТ (потом удалим)</h3>
+      <div class="row">
+        <button id="cheatAll">Выдать всё</button>
+        <button id="cheatKeys">Все ключи</button>
+        <button id="cheatHints">Подсказки</button>
+      </div>
+      <div class="row">
+        <button id="cheatToExit">К выходу</button>
+        <button id="cheatKill" class="danger">Зачистить 5×5</button>
+      </div>
+      <div class="row">
+        <button id="cheatHunter">Охотник рядом</button>
+        <button id="cheatTrap">Проверить аномалию</button>
+      </div>
+    </div>
+  </aside>
+
+  <div id="stage">
+    <div id="hud">
+      <span class="chip stars" id="chipStars">★ <b>3</b></span>
+      <span class="chip coins" id="chipCoins">₥ <b>0</b></span>
+      <span class="chip gren off" id="chipGren" title="Бросить гранату">✹ <b>0</b></span>
+      <span class="chip tele off" id="chipTele" title="Свиток телепорта в ближайший магазин (T)">⌖ <b>0</b></span>
+      <span class="chip apple off" id="chipApple" title="Яблоко-приманка: E — оставить в комнате (монстр съест и заснёт)">◉ <b>0</b></span>
+      <span class="sep"></span>
+      <span class="lbl">КЛЮЧИ</span>
+      <span class="keyslot" id="k0"></span>
+      <span class="keyslot" id="k1"></span>
+      <span class="keyslot" id="k2"></span>
+      <span class="sep"></span>
+      <span class="lbl">СЪЕДЕНО ЗВЁЗД</span><b id="caught" style="color:#e8eef5">0</b>
+    </div>
+    <canvas id="game" width="800" height="800"></canvas>
+    <div id="info">
+      <span class="stat">Комната <b id="pos">–</b></span>
+      <span class="stat">Зона <b id="zone">–</b></span>
+      <span class="stat">Открыто <b id="explored">0</b></span>
+      <span id="msg"></span>
+    </div>
+    <div id="hint">Стрелки / WASD или клик · M — карта · G — граната · T — свиток · E — яблоко · P — пауза · F2 — отладка</div>
+  </div>
+
+</div>
+
+<div id="pauseOverlay"><div id="pauseBox">
+  <h4>ПАУЗА</h4>
+  <p id="pauseInfo"></p>
+  <div class="row"><button id="pauseResume" class="on">Продолжить (P)</button></div>
+  <div class="row">
+    <button id="pauseSave">Сохранить</button>
+    <button id="pauseQuit" class="danger">Выйти без сохранения</button>
+  </div>
+</div></div>
+
+<div id="pauseOverlay"><div id="pauseBox">
+  <h4>ПАУЗА</h4>
+  <p id="pauseInfo"></p>
+  <p style="font-size:11px;color:#6f7887;margin-top:6px">Время замерло. Сохранение — в хранилище браузера.</p>
+  <div class="row">
+    <button id="pauseResume" class="on" style="flex:1">Продолжить (P)</button>
+    <button id="pauseSave" style="flex:1">Сохранить</button>
+  </div>
+  <div class="row">
+    <button id="pauseQuit" class="danger" style="flex:1">Выйти без сохранения</button>
+  </div>
+</div></div>
+
+<div id="modal"><div id="modalBox">
+  <h4 id="modalTitle">Заголовок</h4>
+  <p id="modalText">Текст</p>
+  <div class="row" style="justify-content:flex-end">
+    <button id="modalNo">Отмена</button>
+    <button id="modalYes" class="on">Хорошо</button>
+  </div>
+</div></div>
+
+<script>
+'use strict';
+
+// ============================================================
+// 0. НАСТРОЙКИ ИГРЫ  ←←← ВСЁ КРУТИТЬ ЗДЕСЬ
+//    (баланс уровней — ниже, в секции «2. СЛОЖНОСТЬ»)
+// ============================================================
+const TUNE = {
+  // --- ДВИЖЕНИЕ ИГРОКА -------------------------------------
+  moveTime:     0.9,   // сек: время перехода между комнатами
+  inputBuffer:  0.5,   // сек: нажатие, сделанное ДО конца хода, сработает сразу
+                       // после него, если прошло не больше этого времени.
+                       // 0 = как раньше (нажатие в движении пропадает)
+  holdToMove:   false, // true: удерживание клавиши = непрерывное движение
+
+  // --- ЗВЁЗДЫ (ЖИЗНИ) --------------------------------------
+  startStars:   3,     // звёзд на старте
+  starsMult:    1.8,   // множитель числа звёзд на карте (1 = как в v10)
+
+  // --- МОНСТРЫ ----------------------------------------------
+  sateTime:     30,    // сек: монстр «сыт» и неподвижен после съедения звезды
+  stayAfterCatch: true,// true: после поимки остаётся на месте (сытый);
+                       // false: телепортируется домой (как в v10)
+  hunterFrac:   0.10,  // ЗАПАСНАЯ доля Охотников, если не задана своя в DIFFICULTY
+                       // (по сложностям задана своя, см. «2. СЛОЖНОСТЬ»)
+                       // Баланс Охотника (ХП, урон звёздам, сон, патруль)
+                       // — ниже, в MONSTER_TYPES.monster2; ХП/урон звёздам по
+                       // сложности задаются в DIFFICULTY (monster2Hp, monster2Stars)
+
+  // --- БОСС «Надзиратель» (monster3) -------------------------
+  bossReact:    12,    // комнат по пути: на таком расстоянии Босс «замечает» игрока
+                       // (сквозь стены) и начинает преследование до телепорта/смерти
+  bossLethal:   true,  // true: поимка Боссом = гибель, звёзды не спасают.
+                       // false: как у остальных — выбивает monster3.starDamage звёзд
+
+  // --- ЯБЛОКО ------------------------------------------------
+  appleKey:     'KeyE',// клавиша: оставить яблоко-приманку в комнате
+
+  // --- ГРАНАТА ----------------------------------------------
+  grenadeFriendlyFire: true, // взрыв задевает игрока: −1 звезда, без звёзд — смерть
+  grenadeFuse:  2.0,   // сек до взрыва
+  grenadeDamage: 3,    // урон взрыва по монстрам (Ползун: hp 1 → гибнет сразу)
+
+  // --- АНОМАЛИИ (комнаты, бьющие монстров) -------------------
+  trapDamage: 3,       // урон монстру за проход через аномалию
+                       // (равен урону гранаты: Ползун гибнет сразу,
+                       //  будущие «толстые» монстры — только ранятся)
+
+  // --- ЦЕНЫ В МАГАЗИНЕ --------------------------------------
+  prices: { star:14, grenade:22, teleport:40, hintExit:70, hintPath:170, apple:5 },
+
+  // --- ЧИТ-ПАНЕЛЬ ДЛЯ ТЕСТОВ --------------------------------
+  cheats: true,        // false — скрыть панель «Тест»
+};
+
+// ============================================================
+// 1. КОНСТАНТЫ
+// ============================================================
+const CANVAS_SIZE = 800;
+const ROOM_SIZE   = 250;
+
+const T_OPEN = 0.6, T_CLOSE = 0.6, T_MOVE = TUNE.moveTime;
+const T_UNLOCK = 1.0;
+
+
+const DOOR_WIDTH = 64;
+const DOOR_COLOR = '#8b5a2b';
+const WALL_COLOR = '#1b1e23';
+
+const CENTER_R    = 24;
+const ITEM_R      = 15;
+const CATCH_R     = CENTER_R;
+const MONSTER_SEP = 30;
+const ROOM_CAP    = 5;
+
+const START_STARS = TUNE.startStars;
+
+const GRENADE_FUSE   = TUNE.grenadeFuse;
+const GRENADE_RADIUS = ROOM_SIZE * 0.62;
+
+const DIR = {
+  N:{dx:0,dy:-1,opp:'S'}, S:{dx:0,dy:1,opp:'N'},
+  E:{dx:1,dy:0,opp:'W'},  W:{dx:-1,dy:0,opp:'E'},
+};
+const DIRS = ['N','S','E','W'];
+const SWING_BY_DIR = {N:+1, S:-1, E:+1, W:-1};
+const TAU = Math.PI*2;
+
+const MONSTER_ACTIVE_RANGE = 12;
+const PATTERN_CACHE_MAX    = 90;
+
+// Три цвета замков
+const KEY_DEFS = [
+  { id:0, name:'сиреневый',  color:'#b07ae8', dark:'#6b40a0' },
+  { id:1, name:'бирюзовый',  color:'#3fd0c8', dark:'#1d7c78' },
+  { id:2, name:'малиновый',  color:'#f0509a', dark:'#962d5e' },
+];
+
+const PRICES = TUNE.prices;
+
+let DEBUG = false, SHOW_SOLUTION = false;
+
+// ============================================================
+// 2. СЛОЖНОСТЬ
+// ============================================================
+const DIFFICULTY = {
+  easy: {
+    label:'Лёгкий', size:25,
+    zoneFrac:[0.34,0.58,0.78,1.00],
+    sectors: [1, 1, 2, 3],
+    throats: [0, 8, 3, 2],
+    loops:   [1, 0.52, 0.36, 0.22],
+    density: [0.020, 0.045, 0.070, 0.100],  // монстров на комнату
+    onPath:  [0, 0.20, 0.40, 0.65],
+    exitGuards: 4,
+    stars: 14, coins: 42, grenadesOnMap: 5, shops: 3, locks: 2, traps: 4,
+    apples: 48,               // яблок МНОГО — больше, чем денег (дёшево, 5₥)
+    hunterFrac: 0.05,         // доля Охотников (лёгкий — пореже и слабее)
+    monster2Hp: 4,            // ХП Охотника (2 аномалии/гранаты = достаточно)
+    monster2Stars: 2,         // звёзд за укус Охотника на лёгком
+    bosses: 1,                // Боссов на карте (лёгкий — один)
+    zoneNames:['Ядро','Галереи','Ходы','Горло'],
+  },
+  normal: {
+    label:'Средний', size:33,
+    zoneFrac:[0.28,0.52,0.72,0.88,1.00],
+    sectors: [1, 1, 3, 5, 6],
+    throats: [0, 10, 3, 2, 1],
+    loops:   [1, 0.46, 0.30, 0.18, 0.10],
+    density: [0.025, 0.050, 0.078, 0.098, 0.118],
+    onPath:  [0, 0.15, 0.35, 0.55, 0.75],
+    exitGuards: 6,
+    stars: 16, coins: 58, grenadesOnMap: 7, shops: 4, locks: 3, traps: 5,
+    apples: 66,
+    hunterFrac: 0.07,
+    monster2Hp: 8,            // ровно 3 аномалии/гранаты (урон 3)
+    monster2Stars: 3,
+    bosses: 1,
+    zoneNames:['Ядро','Галереи','Ходы','Теснины','Горло'],
+  },
+  hard: {
+    label:'Сложный', size:41,
+    zoneFrac:[0.22,0.44,0.64,0.82,1.00],
+    sectors: [1, 2, 4, 6, 8],
+    throats: [0, 8, 2, 1, 1],
+    loops:   [1, 0.38, 0.25, 0.15, 0.08],
+    density: [0.030, 0.058, 0.088, 0.115, 0.140],
+    onPath:  [0, 0.20, 0.45, 0.65, 0.85],
+    exitGuards: 9,
+    stars: 20, coins: 76, grenadesOnMap: 9, shops: 5, locks: 3, traps: 6,
+    apples: 84,
+    hunterFrac: 0.08,
+    monster2Hp: 8,
+    monster2Stars: 3,
+    bosses: 2,                // сложный — два Босса
+    zoneNames:['Ядро','Галереи','Ходы','Теснины','Горло'],
+  },
+};
+
+// ============================================================
+// 3. УТИЛИТЫ
+// ============================================================
+function mulberry32(seed){
+  return function(){
+    seed|=0; seed=seed+0x6D2B79F5|0;
+    let t=Math.imul(seed^seed>>>15,1|seed);
+    t=t+Math.imul(t^t>>>7,61|t)^t;
+    return((t^t>>>14)>>>0)/4294967296;
+  };
+}
+function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+function easeInOut(t){ return t<0.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2; }
+function approach(c,t,s){ const d=t-c; return Math.abs(d)<=s?t:c+Math.sign(d)*s; }
+function shuffle(a,rnd){
+  for(let i=a.length-1;i>0;i--){ const j=Math.floor(rnd()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
+  return a;
+}
+
+// ============================================================
+// 4. ГЕНЕРАТОР
+// ============================================================
+function generateMaze(cfg, seed){
+  const rnd = mulberry32(seed);
+  const W=cfg.size, H=cfg.size;
+  const cx=(W-1)>>1, cy=(H-1)>>1;
+  const maxRing=Math.max(cx,cy);
+  const NZ=cfg.zoneFrac.length;
+
+  const rooms=[];
+  for (let y=0;y<H;y++){
+    const row=[];
+    for (let x=0;x<W;x++) row.push({N:'wall',S:'wall',E:'wall',W:'wall'});
+    rooms.push(row);
+  }
+  const idx=(x,y)=>y*W+x;
+  const inB=(x,y)=>x>=0&&y>=0&&x<W&&y<H;
+  const ring=(x,y)=>Math.max(Math.abs(x-cx),Math.abs(y-cy));
+
+  function openEdge(x,y,d,type){
+    const nx=x+DIR[d].dx, ny=y+DIR[d].dy;
+    if (!inB(nx,ny)) return;
+    rooms[y][x][d]=type||'closed';
+    rooms[ny][nx][DIR[d].opp]=type||'closed';
+  }
+
+  // --- зоны ---
+  const bounds=[];
+  for (let i=0;i<NZ;i++){
+    let b=Math.round(cfg.zoneFrac[i]*maxRing);
+    if (i>0) b=Math.max(b,bounds[i-1]+1);
+    bounds.push(Math.min(b,maxRing));
+  }
+  bounds[NZ-1]=maxRing;
+
+  const zone=new Int8Array(W*H);
+  for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+    const r=ring(x,y); let z=NZ-1;
+    for (let i=0;i<NZ;i++) if (r<=bounds[i]){ z=i; break; }
+    zone[idx(x,y)]=z;
+  }
+  const zoneOf=(x,y)=>zone[idx(x,y)];
+
+  // --- секторы ---
+  const rot=[]; for (let k=0;k<NZ;k++) rot.push(rnd());
+  function sectorOf(x,y,k){
+    const S=cfg.sectors[k];
+    if (S<=1) return 0;
+    let t=(Math.atan2(y-cy,x-cx)+Math.PI)/TAU;
+    t=(t+rot[k])%1;
+    return Math.floor(t*S)%S;
+  }
+
+  const zoneCells=Array.from({length:NZ},()=>[]);
+  for (let y=0;y<H;y++) for (let x=0;x<W;x++) zoneCells[zoneOf(x,y)].push({x,y});
+
+  const parent=new Int32Array(W*H);
+  for (let i=0;i<W*H;i++) parent[i]=i;
+  function find(a){ while(parent[a]!==a){ parent[a]=parent[parent[a]]; a=parent[a]; } return a; }
+  function unite(a,b){ const ra=find(a),rb=find(b); if(ra===rb) return false; parent[ra]=rb; return true; }
+
+  const zoneComponents=Array.from({length:NZ},()=>[]);
+
+  for (let k=0;k<NZ;k++){
+    const groups=new Map();
+    for (const c of zoneCells[k]){
+      const s=sectorOf(c.x,c.y,k);
+      if (!groups.has(s)) groups.set(s,[]);
+      groups.get(s).push(c);
+    }
+    for (const cells of groups.values()){
+      const inG=new Set(cells.map(c=>idx(c.x,c.y)));
+      const edges=[];
+      for (const c of cells) for (const d of ['E','S']){
+        const nx=c.x+DIR[d].dx, ny=c.y+DIR[d].dy;
+        if (!inB(nx,ny) || !inG.has(idx(nx,ny))) continue;
+        edges.push({x:c.x,y:c.y,d});
+      }
+      shuffle(edges,rnd);
+      const rest=[];
+      for (const e of edges){
+        const a=idx(e.x,e.y), b=idx(e.x+DIR[e.d].dx,e.y+DIR[e.d].dy);
+        if (unite(a,b)) openEdge(e.x,e.y,e.d); else rest.push(e);
+      }
+      const p=cfg.loops[k];
+      for (const e of rest) if (rnd()<p) openEdge(e.x,e.y,e.d);
+
+      const byRoot=new Map();
+      for (const c of cells){
+        const r=find(idx(c.x,c.y));
+        if (!byRoot.has(r)) byRoot.set(r,[]);
+        byRoot.get(r).push(c);
+      }
+      for (const comp of byRoot.values()) zoneComponents[k].push(comp);
+    }
+  }
+
+  function connectComponent(comp,k){
+    const want=Math.max(1,cfg.throats[k]);
+    let cands=[];
+    for (const c of comp) for (const d of DIRS){
+      const nx=c.x+DIR[d].dx, ny=c.y+DIR[d].dy;
+      if (!inB(nx,ny) || zoneOf(nx,ny)!==k-1) continue;
+      cands.push({x:c.x,y:c.y,d,ang:Math.atan2(c.y-cy,c.x-cx)});
+    }
+    if (!cands.length){
+      for (const c of comp) for (const d of DIRS){
+        const nx=c.x+DIR[d].dx, ny=c.y+DIR[d].dy;
+        if (!inB(nx,ny) || zoneOf(nx,ny)>k) continue;
+        if (find(idx(nx,ny))===find(idx(c.x,c.y))) continue;
+        cands.push({x:c.x,y:c.y,d,ang:Math.atan2(c.y-cy,c.x-cx)});
+      }
+    }
+    if (!cands.length) return;
+    cands.sort((a,b)=>a.ang-b.ang);
+    const n=Math.min(want,cands.length), off=rnd(), picked=new Set();
+    for (let i=0;i<n;i++){
+      let j=Math.floor(((i+off)/n)*cands.length)%cands.length, g=0;
+      while (picked.has(j) && g++<cands.length) j=(j+1)%cands.length;
+      picked.add(j);
+      const e=cands[j];
+      openEdge(e.x,e.y,e.d);
+      unite(idx(e.x,e.y), idx(e.x+DIR[e.d].dx,e.y+DIR[e.d].dy));
+    }
+  }
+  for (let k=1;k<NZ;k++) for (const comp of zoneComponents[k]) connectComponent(comp,k);
+
+  // --- BFS ---
+  const startX=cx, startY=cy;
+  function bfsFrom(sx0,sy0){
+    const dist=new Int32Array(W*H).fill(-1);
+    const from=new Int32Array(W*H).fill(-1);
+    const q=[idx(sx0,sy0)]; dist[q[0]]=0;
+    for (let h=0;h<q.length;h++){
+      const cur=q[h], x=cur%W, y=(cur/W)|0;
+      for (const d of DIRS){
+        if (rooms[y][x][d]==='wall') continue;
+        const nx=x+DIR[d].dx, ny=y+DIR[d].dy;
+        if (!inB(nx,ny)) continue;
+        const ni=idx(nx,ny);
+        if (dist[ni]!==-1) continue;
+        dist[ni]=dist[cur]+1; from[ni]=cur; q.push(ni);
+      }
+    }
+    return {dist,from};
+  }
+
+  let {dist,from}=bfsFrom(startX,startY);
+  for (let pass=0;pass<6;pass++){
+    let fixed=false;
+    for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+      if (dist[idx(x,y)]!==-1) continue;
+      let best=null;
+      for (const d of DIRS){
+        const nx=x+DIR[d].dx, ny=y+DIR[d].dy;
+        if (!inB(nx,ny) || dist[idx(nx,ny)]===-1) continue;
+        const sc=zoneOf(nx,ny)*10+rnd();
+        if (!best||sc<best.sc) best={d,sc};
+      }
+      if (best){ openEdge(x,y,best.d); fixed=true; }
+    }
+    if (!fixed) break;
+    ({dist,from}=bfsFrom(startX,startY));
+  }
+
+  // --- выход ---
+  const rim=[];
+  for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+    if (ring(x,y)!==maxRing) continue;
+    const dd=dist[idx(x,y)];
+    if (dd>0) rim.push({x,y,d:dd});
+  }
+  rim.sort((a,b)=>b.d-a.d);
+  const pool=rim.slice(0,Math.max(1,Math.floor(rim.length*0.25)));
+  const ex=pool[Math.floor(rnd()*pool.length)];
+
+  let exitDir='N';
+  if (ex.y===0) exitDir='N';
+  else if (ex.y===H-1) exitDir='S';
+  else if (ex.x===0) exitDir='W';
+  else exitDir='E';
+
+  // ============================================================
+  // ЗАПЕРТЫЕ ДВЕРИ — СОКРАЩЕНИЯ
+  // Ищем стену, снос которой сильнее всего укорачивает путь к выходу.
+  // Это НОВЫЕ рёбра поверх связного лабиринта → тупиков не создаёт.
+  // ============================================================
+  const locks = new Map();   // doorKey → colorId
+  {
+    const nLocks = Math.min(cfg.locks, KEY_DEFS.length);
+    const placed = [];
+    const minSep = Math.max(4, Math.floor(maxRing*0.5));
+
+    for (let li=0; li<nLocks; li++){
+      const dExit = bfsFrom(ex.x, ex.y).dist;
+      const dStart = bfsFrom(startX, startY).dist;
+      const baseLen = dStart[idx(ex.x,ex.y)];
+      let best=null;
+
+      for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+        for (const d of ['E','S']){
+          if (rooms[y][x][d]!=='wall') continue;
+          const nx=x+DIR[d].dx, ny=y+DIR[d].dy;
+          if (!inB(nx,ny)) continue;
+          const a=idx(x,y), b=idx(nx,ny);
+          if (dStart[a]<0||dStart[b]<0||dExit[a]<0||dExit[b]<0) continue;
+
+          const viaAB = dStart[a]+1+dExit[b];
+          const viaBA = dStart[b]+1+dExit[a];
+          const gain = baseLen - Math.min(viaAB, viaBA);
+          if (gain < 12) continue;
+
+          // разнос по карте
+          let tooClose=false;
+          for (const p of placed)
+            if (Math.abs(p.x-x)+Math.abs(p.y-y) < minSep){ tooClose=true; break; }
+          if (tooClose) continue;
+
+          const score = gain + rnd()*3;
+          if (!best || score>best.score) best={x,y,d,gain,score};
+        }
+      }
+
+      if (!best) break;
+      openEdge(best.x,best.y,best.d,'locked');
+      const kx=best.x, ky=best.y, kd=best.d;
+      const dk = (ky < ky+DIR[kd].dy || (ky===ky+DIR[kd].dy && kx<kx+DIR[kd].dx))
+        ? `${kx},${ky},${kd}`
+        : `${kx+DIR[kd].dx},${ky+DIR[kd].dy},${DIR[kd].opp}`;
+      locks.set(dk, li);
+      placed.push({x:best.x, y:best.y, gain:best.gain});
+    }
+  }
+
+  // финальные дистанции (замки считаем проходимыми — это верхняя оценка)
+  ({dist,from}=bfsFrom(startX,startY));
+
+  const solution=[];
+  { let cur=idx(ex.x,ex.y);
+    while(cur!==-1){ solution.push({x:cur%W,y:(cur/W)|0}); cur=from[cur]; }
+    solution.reverse(); }
+  const solutionSet=new Set(solution.map(p=>`${p.x},${p.y}`));
+
+  // ============================================================
+  // ПРЕДМЕТЫ
+  // ============================================================
+  const items = new Map();   // "x,y" → {type, ...}
+  const shops = new Set();
+  const traps = new Set();   // аномалии — бьют монстров при проходе
+
+  {
+    const deadByZone = Array.from({length:NZ},()=>[]);
+    const midByZone  = Array.from({length:NZ},()=>[]);
+    const busy = new Set([`${startX},${startY}`, `${ex.x},${ex.y}`]);
+
+    for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+      const k=`${x},${y}`;
+      if (busy.has(k)) continue;
+      const dd=dist[idx(x,y)];
+      if (dd<3) continue;
+      let deg=0; for (const d of DIRS) if (rooms[y][x][d]!=='wall') deg++;
+      if (deg===0) continue;
+      const z=zoneOf(x,y);
+      (deg===1 ? deadByZone[z] : midByZone[z]).push({x,y,d:dd});
+    }
+    for (const a of deadByZone) shuffle(a,rnd);
+    for (const a of midByZone)  shuffle(a,rnd);
+
+    const put=(cell,obj)=>{
+      const k=`${cell.x},${cell.y}`;
+      if (items.has(k)||shops.has(k)) return false;
+      items.set(k,obj); return true;
+    };
+    const takeDead=(z)=>deadByZone[z] && deadByZone[z].length ? deadByZone[z].pop() : null;
+    const takeMid =(z)=>midByZone[z]  && midByZone[z].length  ? midByZone[z].pop()  : null;
+    const anyDead=()=>{
+      for (let z=NZ-1;z>=0;z--) if (deadByZone[z].length) return deadByZone[z].pop();
+      return null;
+    };
+
+    // 1) ключи — в тупиках, ПОДАЛЬШЕ ОТ СВОЕЙ ЗАПЕРТОЙ ДВЕРИ
+    //    (по проходимому пути), а не в соседней с ней комнате.
+    //    bfsDistFrom считает дистанцию по клеткам от двери.
+    const bfsDistFrom=(sx0,sy0)=>{
+      const dd=new Int32Array(W*H).fill(-1);
+      const q=[idx(sx0,sy0)]; dd[q[0]]=0;
+      for (let h=0;h<q.length;h++){
+        const cur=q[h], x=cur%W, y=(cur/W)|0;
+        for (const d of DIRS){
+          if (rooms[y][x][d]==='wall') continue;
+          const nx=x+DIR[d].dx, ny=y+DIR[d].dy;
+          if (!inB(nx,ny)) continue;
+          const ni=idx(nx,ny);
+          if (dd[ni]!==-1) continue;
+          dd[ni]=dd[cur]+1; q.push(ni);
+        }
+      }
+      return dd;
+    };
+    // Ключ должен лежать ПОДАЛЬШЕ от своей двери — минимум 4 комнаты по пути,
+    // а предпочтительно намного дальше (см. KEY_MIN_FROM_DOOR). Так ключ не
+    // окажется в комнате рядом с дверью даже на Easy.
+    const KEY_MIN_FROM_DOOR=Math.max(4,Math.round(maxRing*0.8)); // желаемая дистанция
+    for (const [dk, colorId] of locks){
+      const p0=dk.split(',');
+      const lx=+p0[0], ly=+p0[1];
+      const pd=bfsDistFrom(lx,ly);
+      const byDist=(deadFlag)=>{
+        const out=[];
+        for (let z=NZ-1;z>=0;z--){
+          const arr=deadFlag?deadByZone[z]:midByZone[z];
+          if (!arr) continue;
+          for (const c of arr){
+            const d=pd[idx(c.x,c.y)];
+            if (d>=0) out.push({c,z,d});
+          }
+        }
+        out.sort((a,b)=>b.d-a.d);
+        return out;
+      };
+      let pick=null;
+      // 1) дальние тупики (желаемая дистанция и больше)
+      { const arr=byDist(true).filter(o=>o.d>=KEY_MIN_FROM_DOOR);
+        if (arr.length) pick=arr[Math.floor(rnd()*Math.min(5,arr.length))]; }
+      // 2) любые тупики, но не ближе 3 комнат от двери
+      if (!pick){ const arr=byDist(true).filter(o=>o.d>=3);
+        if (arr.length) pick=arr[Math.floor(rnd()*Math.min(5,arr.length))]; }
+      // 3) проходные комнаты, не ближе 3 комнат
+      if (!pick){ const arr=byDist(false).filter(o=>o.d>=3);
+        if (arr.length) pick=arr[Math.floor(rnd()*Math.min(5,arr.length))]; }
+      if (pick){
+        const z=pick.z;
+        const pool=(deadByZone[z]||[]).indexOf(pick.c)>=0?deadByZone[z]:midByZone[z];
+        const j=pool.indexOf(pick.c);
+        if (j>=0) pool.splice(j,1);
+        put(pick.c,{type:'key', color:colorId});
+      } else {
+        const c=anyDead();                       // на крайний случай
+        if (c) put(c,{type:'key', color:colorId});
+      }
+    }
+
+    // 2) магазины — в проходных комнатах, разнесены
+    {
+      const spots=[];
+      for (let z=1;z<NZ;z++) for (const c of midByZone[z]) spots.push(c);
+      shuffle(spots,rnd);
+      const chosen=[];
+      for (const c of spots){
+        if (chosen.length>=cfg.shops) break;
+        if (items.has(`${c.x},${c.y}`)) continue;
+        let ok=true;
+        for (const p of chosen)
+          if (Math.abs(p.x-c.x)+Math.abs(p.y-c.y) < Math.floor(maxRing*0.6)){ ok=false; break; }
+        if (!ok) continue;
+        chosen.push(c);
+        shops.add(`${c.x},${c.y}`);
+      }
+    }
+
+    // 2а) яблоки — МНОГО, больше чем денег; кладём рано, пока тупики свободны.
+    //      (съедобны Ползунами и Охотниками; Боссу безразличны)
+    for (let i=0;i<(cfg.apples||0);i++){
+      const z=Math.floor(rnd()*NZ);
+      const cell=anyDead()||takeMid(z)||takeMid(NZ-1);
+      if (!cell) break;
+      put(cell,{type:'apple'});
+    }
+
+    // 3) звёзды — глубже = чаще (×TUNE.starsMult)
+    {
+      const wsum=[]; let tot=0;
+      for (let z=0;z<NZ;z++){ const w=(z+1)*(z+1); wsum.push(w); tot+=w; }
+      for (let z=0;z<NZ;z++){
+        let n=Math.round(cfg.stars*TUNE.starsMult*wsum[z]/tot);
+        while (n-- > 0){
+          const cell = (rnd()<0.75 ? takeDead(z) : takeMid(z)) || takeDead(z) || takeMid(z);
+          if (!cell) break;
+          put(cell,{type:'star'});
+        }
+      }
+    }
+
+    // 4) деньги — по всей карте, номинал растёт к краю
+    for (let i=0;i<cfg.coins;i++){
+      const z=Math.min(NZ-1, Math.floor(Math.pow(rnd(),0.7)*NZ));
+      const cell=(rnd()<0.55?takeDead(z):takeMid(z)) || takeMid(z) || takeDead(z);
+      if (!cell) continue;
+      const val = 1 + Math.floor(rnd()*(2+z*1.5));
+      put(cell,{type:'coin', value:val});
+    }
+
+    // 5) гранаты — в тупиках
+    for (let i=0;i<cfg.grenadesOnMap;i++){
+      const z=1+Math.floor(rnd()*(NZ-1));
+      const cell=takeDead(z)||anyDead()||takeMid(z);
+      if (!cell) continue;
+      put(cell,{type:'grenade'});
+    }
+
+    // 6) АНОМАЛИИ — проходные комнаты «на дороге», рядом нет тупиков,
+    //    и между соседями есть обходные петли (можно водить монстра кругами)
+    {
+      const degOf=(x,y)=>{ let n=0; for (const d of DIRS) if (rooms[y][x][d]!=='wall') n++; return n; };
+      // есть ли путь A→B, минуя комнату F, не длиннее maxLen (это и есть «петля»)
+      const altPath=(ax,ay,bx,by,fx,fy,maxLen)=>{
+        const q=[[ax,ay,0]], seenA=new Set([`${ax},${ay}`,`${fx},${fy}`]);
+        while (q.length){
+          const [x,y,dd]=q.shift();
+          if (x===bx&&y===by) return true;
+          if (dd>=maxLen) continue;
+          for (const d of DIRS){
+            if (rooms[y][x][d]==='wall') continue;
+            const nx=x+DIR[d].dx, ny=y+DIR[d].dy, k=`${nx},${ny}`;
+            if (seenA.has(k)) continue;
+            seenA.add(k); q.push([nx,ny,dd+1]);
+          }
+        }
+        return false;
+      };
+
+      const cands=[];
+      for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+        const k=`${x},${y}`;
+        if (items.has(k)||shops.has(k)) continue;
+        if (x===startX&&y===startY) continue;
+        if (x===ex.x&&y===ex.y) continue;
+        if (dist[idx(x,y)]<6) continue;
+        if (degOf(x,y)<2) continue;                    // только проходные
+        let ok=true; const nbs=[];
+        for (const d of DIRS){
+          if (rooms[y][x][d]==='wall') continue;
+          const nx=x+DIR[d].dx, ny=y+DIR[d].dy;
+          if (degOf(nx,ny)<2){ ok=false; break; }      // рядом нет тупиков
+          nbs.push([nx,ny]);
+        }
+        if (!ok) continue;
+        let nLoops=0;                                   // сколько пар соседей связаны петлёй
+        for (let i=0;i<nbs.length;i++)
+          for (let j=i+1;j<nbs.length;j++)
+            if (altPath(nbs[i][0],nbs[i][1],nbs[j][0],nbs[j][1],x,y,9)) nLoops++;
+        if (nLoops>=1) cands.push({x,y,nLoops});
+      }
+      shuffle(cands,rnd);
+      cands.sort((a,b)=>b.nLoops-a.nLoops);            // лучшие — с петлями с обеих сторон
+      const minGap=Math.max(4,Math.floor(maxRing*0.4));
+      const chosen=[];
+      for (const c of cands){
+        if (chosen.length>=(cfg.traps||0)) break;
+        let far=true;
+        for (const p of chosen)
+          if (Math.abs(p.x-c.x)+Math.abs(p.y-c.y)<minGap){ far=false; break; }
+        if (!far) continue;
+        chosen.push(c);
+        traps.add(`${c.x},${c.y}`);
+      }
+    }
+  }
+
+  return {
+    w:W,h:H,rooms,cfg,seed,cx,cy,maxRing,NZ,bounds,zone,
+    start:{x:startX,y:startY}, exit:{x:ex.x,y:ex.y}, exitDir,
+    dist, solution, solutionSet, items, shops, traps, locks,
+    pathLen:solution.length-1,
+  };
+}
+
+// ============================================================
+// 5. СОСТОЯНИЕ
+// ============================================================
+let MAP=null, WORLD_SEED=0;
+let visited=new Set(), seen=new Set();
+let gameWon=false, gameOver=false, gameOverText='ВАС СЪЕЛИ';
+let caughtCount=0;
+let hintExit=false, hintPath=false;
+let grenadeWarned=false;
+let teleportWarned=false;
+
+function maybeGrenadeInfo(){
+  if (grenadeWarned) return;
+  grenadeWarned=true;
+  showModal('У вас появилась граната ✹',
+    `Бросок — клавиша G (или клик по ✹ в панели). Взрыв через ${GRENADE_FUSE} сек ` +
+    `уничтожает всех в комнате — включая вас: если есть звезда защиты, она разобьётся, ` +
+    `без звёзд — гибель. Бросили — сразу уходите из комнаты!`,
+    null, true);
+}
+function maybeTeleportInfo(){
+  if (teleportWarned) return;
+  teleportWarned=true;
+  showModal('Куплен свиток телепорта ⌖',
+    'Свиток срабатывает в любом месте лабиринта: клавиша T (или клик по ⌖ в панели) ' +
+    'мгновенно переносит вас в ближайший магазин — ближайший по проходимому пути, ' +
+    'а не по прямой. Свиток одноразовый.',
+    null, true);
+}
+
+const inv = { stars:START_STARS, coins:0, grenades:0, teleports:0, apples:0, keys:[false,false,false] };
+
+const inBounds=(x,y)=>x>=0&&y>=0&&x<MAP.w&&y<MAP.h;
+const sideType=(x,y,d)=>MAP.rooms[y][x][d];
+const zoneAt=(x,y)=>MAP.zone[y*MAP.w+x];
+
+function doorKey(x,y,dir){
+  const nx=x+DIR[dir].dx, ny=y+DIR[dir].dy;
+  if (y<ny||(y===ny&&x<nx)) return `${x},${y},${dir}`;
+  return `${nx},${ny},${DIR[dir].opp}`;
+}
+function parseDoorKey(k){ const p=k.split(','); return {x:+p[0],y:+p[1],dir:p[2]}; }
+function doorTypeByKey(k){ const p=parseDoorKey(k); return MAP.rooms[p.y][p.x][p.dir]; }
+function lockColorOf(k){ const c=MAP.locks.get(k); return c===undefined?null:KEY_DEFS[c]; }
+
+// ============================================================
+// 6. КАМЕРА
+// ============================================================
+let camX=0, camY=0;
+const roomCX=rx=>rx*ROOM_SIZE;
+const roomCY=ry=>ry*ROOM_SIZE;
+const sx=wx=>wx-camX+CANVAS_SIZE/2;
+const sy=wy=>wy-camY+CANVAS_SIZE/2;
+
+function doorGeom(key){
+  const k=parseDoorKey(key), cx=roomCX(k.x), cy=roomCY(k.y);
+  if (k.dir==='E'){
+    const wx=cx+ROOM_SIZE/2;
+    return {p1x:wx,p1y:cy-DOOR_WIDTH/2,p2x:wx,p2y:cy+DOOR_WIDTH/2,mx:wx,my:cy};
+  }
+  const wy=cy+ROOM_SIZE/2;
+  return {p1x:cx-DOOR_WIDTH/2,p1y:wy,p2x:cx+DOOR_WIDTH/2,p2y:wy,mx:cx,my:wy};
+}
+const doorCenter=(rx,ry,d)=>({x:roomCX(rx)+DIR[d].dx*ROOM_SIZE/2, y:roomCY(ry)+DIR[d].dy*ROOM_SIZE/2});
+function clampToRoom(p,room,mg){
+  const cx=roomCX(room.x), cy=roomCY(room.y), h=ROOM_SIZE/2-mg;
+  return {x:clamp(p.x,cx-h,cx+h), y:clamp(p.y,cy-h,cy+h)};
+}
+
+// ============================================================
+// 7. ДВЕРИ
+// ============================================================
+const doorAnims=new Map();
+function requestDoorOpen(key,sign,user){
+  let a=doorAnims.get(key);
+  if (!a){ a={key,angle:0,target:sign*90,users:new Set()}; doorAnims.set(key,a); }
+  else if (Math.abs(a.angle)>1) a.target=Math.sign(a.angle)*90;
+  else a.target=sign*90;
+  a.users.add(user);
+  return a;
+}
+function releaseDoor(key,user){
+  const a=doorAnims.get(key); if(!a) return;
+  a.users.delete(user);
+  if (a.users.size===0) a.target=0;
+}
+const doorPassable=key=>{ const a=doorAnims.get(key); return !!a&&Math.abs(a.angle)>=88; };
+function updateDoors(dt){
+  for (const a of [...doorAnims.values()]){
+    a.angle=approach(a.angle,a.target,(a.target===0?90/T_CLOSE:90/T_OPEN)*dt);
+    if (a.angle===0&&a.target===0&&a.users.size===0) doorAnims.delete(a.key);
+  }
+}
+
+// ============================================================
+// 8. ИГРОК
+// ============================================================
+const player={x:0,y:0};
+const visual={offsetX:0,offsetY:0};
+let move=null;
+let unlocking=null;   // {key,color,dir,t}
+
+function markSeen(rx,ry){
+  for (let dy=-1;dy<=1;dy++) for (let dx=-1;dx<=1;dx++){
+    const nx=rx+dx, ny=ry+dy;
+    if (inBounds(nx,ny)) seen.add(`${nx},${ny}`);
+  }
+}
+
+function pickUp(rx,ry){
+  const k=`${rx},${ry}`;
+  const it=MAP.items.get(k);
+  if (!it) return;
+  // своё оставленное яблоко игрок не подбирает и не уничтожает: оно лежит,
+  // пока его не съест монстр
+  if (it.type==='apple'&&it.dropped){ return; }
+  MAP.items.delete(k);
+  if (it.type==='star'){
+    inv.stars++; flashMessage('Звезда защиты +1');
+  } else if (it.type==='coin'){
+    inv.coins+=it.value; flashMessage(`Деньги +${it.value}`);
+  } else if (it.type==='grenade'){
+    inv.grenades++; flashMessage('Граната +1');
+    maybeGrenadeInfo();
+  } else if (it.type==='apple'){
+    inv.apples++;
+    flashMessage('Яблоко +1 (E — оставить в комнате как приманку)');
+  } else if (it.type==='key'){
+    inv.keys[it.color]=true;
+    flashMessage(`Найден ${KEY_DEFS[it.color].name} ключ`);
+  }
+  updateHud();
+}
+
+function enterRoom(rx,ry,noPick){
+  visited.add(`${rx},${ry}`);
+  markSeen(rx,ry);
+  mapDirty=true;
+  posEl.textContent=`${rx},${ry}`;
+  zoneEl.textContent=MAP.cfg.zoneNames[zoneAt(rx,ry)];
+  exploredEl.textContent=visited.size;
+  if (!noPick) pickUp(rx,ry);   // при загрузке предметы не подбираем повторно
+  refreshShop();
+  if (rx===MAP.exit.x && ry===MAP.exit.y) onWin();
+}
+
+// --- ЯБЛОКО-ПРИМАНКА ---
+// Яблоко лежит в центре комнаты. Монстр должен ПОДОЙТИ и взять его —
+// только тогда оно подействует (уснёт, как после съеденной звезды).
+// Ползун — на TUNE.sateTime (30с), Охотник — на свои 10с, Босс игнорирует.
+function appleInRoom(rx,ry){
+  const it=MAP.items.get(`${rx},${ry}`);
+  return (it&&it.type==='apple')?it:null;
+}
+function eatApple(m){
+  if (m.dead||m.cfg.boss) return false;
+  if (!appleInRoom(m.room.x,m.room.y)) return false;
+  const cx=roomCX(m.room.x), cy=roomCY(m.room.y);
+  MAP.items.delete(`${m.room.x},${m.room.y}`);
+  mapDirty=true;
+  // монстр засыпает В КОМНАТЕ — недалеко от середины (не в дверях),
+  // там же, где уснул бы после укуса игрока
+  m.x=cx+(Math.random()*2-1)*10;
+  m.y=cy+(Math.random()*2-1)*10;
+  m.facing=Math.random()*TAU;
+  m.state='idle'; m.reason='спит'; m.targetRoom=null; m.patrolRoom=null;
+  m.wanderTarget=null; m.ignoreDoorKey=null; m.alert=0; m.moving=0;
+  m.sated=(m.cfg.sateTime||TUNE.sateTime);
+  return true;
+}
+
+// E / клик по чипу: положить яблоко в комнату, где стоите.
+function dropApple(){
+  if (gameOver||gameWon) return;
+  if (move||unlocking){ flashMessage('Нельзя оставить яблоко на ходу'); return; }
+  if (inv.apples<=0){ flashMessage('Нет яблок — они лежат на карте (метка ◉)'); return; }
+  const k=`${player.x},${player.y}`;
+  if (MAP.items.has(k)){ flashMessage('Здесь уже что-то лежит'); return; }
+  if (MAP.traps.has(k)){ flashMessage('В аномалии яблоко сгорит — не оставлять'); return; }
+  inv.apples--;
+  // бросок не в самую середину (там стоит игрок), а чуть в сторону — как граната
+  const ox=(Math.random()*2-1)*26, oy=(Math.random()*2-1)*26;
+  MAP.items.set(k,{type:'apple', dropped:true, ox, oy});
+  mapDirty=true;
+  updateHud();
+  flashMessage('Яблоко оставлено — монстр подойдёт и съест его, когда войдёт');
+}
+
+// ============================================================
+// 8а. ВВОД ДВИЖЕНИЯ: БУФЕР НАЖАТИЙ
+//   Нажатие во время хода не пропадает, а запоминается и
+//   срабатывает сразу по завершении хода — если с момента
+//   нажатия прошло не больше TUNE.inputBuffer секунд.
+//   (защита от «протухших» нажатий и двойных ходов: хранится
+//   только ПОСЛЕДНЕЕ нажатие, и только свежее)
+// ============================================================
+let queuedMove=null;          // {dir, at}
+const heldDirs=[];            // зажатые клавиши направления (для holdToMove)
+
+function tryMove(dir){
+  if (gameWon||gameOver) return;
+  if (move||unlocking){
+    if (TUNE.inputBuffer>0) queuedMove={dir, at:performance.now()};
+    return;
+  }
+  startMove(dir);
+}
+
+function consumeQueued(){
+  if (gameWon||gameOver){ queuedMove=null; return; }
+  if (queuedMove){
+    const age=(performance.now()-queuedMove.at)/1000;
+    const dir=queuedMove.dir;
+    queuedMove=null;
+    if (age<=TUNE.inputBuffer){ startMove(dir); return; }
+  }
+  if (TUNE.holdToMove && heldDirs.length){
+    startMove(heldDirs[heldDirs.length-1]);
+  }
+}
+
+function startMove(dir){
+  if (move||unlocking||gameWon||gameOver) return;
+  const t=sideType(player.x,player.y,dir);
+  if (t==='wall'){ flashMessage('Там стена'); return; }
+
+  const key=doorKey(player.x,player.y,dir);
+
+  if (t==='locked'){
+    const lc=MAP.locks.get(key);
+    if (lc===undefined){ flashMessage('Заперто наглухо'); return; }
+    if (!inv.keys[lc]){
+      flashMessage(`Заперто. Нужен ${KEY_DEFS[lc].name} ключ`);
+      return;
+    }
+    unlocking={key, color:lc, dir, t:0};
+    return;
+  }
+
+  requestDoorOpen(key,SWING_BY_DIR[dir],'player');
+  move={dir,key,phase:'opening',progress:0};
+}
+
+function updateUnlock(dt){
+  if (!unlocking) return;
+  unlocking.t+=dt;
+  if (unlocking.t>=T_UNLOCK){
+    const p=parseDoorKey(unlocking.key);
+    MAP.rooms[p.y][p.x][p.dir]='closed';
+    const nx=p.x+DIR[p.dir].dx, ny=p.y+DIR[p.dir].dy;
+    MAP.rooms[ny][nx][DIR[p.dir].opp]='closed';
+    MAP.locks.delete(unlocking.key);
+    const dir=unlocking.dir;
+    flashMessage('Замок открыт');
+    unlocking=null;
+    mapDirty=true;
+    startMove(dir);
+  }
+}
+
+function updatePlayer(dt){
+  if (!move) return;
+  if (move.phase==='opening'){
+    if (doorPassable(move.key)){ move.phase='moving'; move.progress=0; }
+    return;
+  }
+  move.progress+=dt;
+  const t=Math.min(move.progress/T_MOVE,1), e=easeInOut(t);
+  visual.offsetX=DIR[move.dir].dx*ROOM_SIZE*e;
+  visual.offsetY=DIR[move.dir].dy*ROOM_SIZE*e;
+  if (t>=1){
+    player.x+=DIR[move.dir].dx; player.y+=DIR[move.dir].dy;
+    visual.offsetX=0; visual.offsetY=0;
+    releaseDoor(move.key,'player');
+    move=null;
+    enterRoom(player.x,player.y);
+    consumeQueued();          // отработать нажатие, сделанное во время хода
+  }
+}
+const playerWorld=()=>({x:camX,y:camY});
+const playerRoomForAI=()=>({
+  x:clamp(Math.round(camX/ROOM_SIZE),0,MAP.w-1),
+  y:clamp(Math.round(camY/ROOM_SIZE),0,MAP.h-1),
+});
+
+// ============================================================
+// 9. ГРАНАТЫ
+// ============================================================
+let grenades=[];    // {room, x, y, t}
+let explosions=[];  // {x, y, t}
+
+function dropGrenade(){
+  if (inv.grenades<=0||gameWon||gameOver) return;
+  doDropGrenade();   // без подтверждения — инструктаж был при получении
+}
+function doDropGrenade(){
+  inv.grenades--;
+  updateHud();
+  const a=Math.random()*TAU;
+  grenades.push({
+    room:{x:player.x,y:player.y},
+    x:roomCX(player.x)+Math.cos(a)*30,
+    y:roomCY(player.y)+Math.sin(a)*30,
+    t:GRENADE_FUSE,
+  });
+  flashMessage('Граната брошена!');
+}
+
+function updateGrenades(dt){
+  for (let i=grenades.length-1;i>=0;i--){
+    const g=grenades[i];
+    g.t-=dt;
+    if (g.t>0) continue;
+    grenades.splice(i,1);
+    explosions.push({x:g.x, y:g.y, t:0});
+    let killed=0, wounded=0;
+    for (const m of monsters){
+      if (Math.hypot(m.x-g.x, m.y-g.y) > GRENADE_RADIUS) continue;
+      damageMonster(m,TUNE.grenadeDamage,'grenade');
+      if (m.dead) killed++; else wounded++;
+    }
+    purgeDead();
+    // взрыв задевает игрока: −1 звезда, без звёзд — гибель
+    if (TUNE.grenadeFriendlyFire && !gameOver && !gameWon){
+      const p=playerWorld();
+      if (Math.hypot(p.x-g.x, p.y-g.y) <= GRENADE_RADIUS){
+        if (inv.stars>0){
+          inv.stars--; updateHud();
+          flashMessage(inv.stars>0
+            ? `Взрыв зацепил вас! Звезда разбита, осталось ${inv.stars}`
+            : 'Взрыв зацепил вас! Последняя звезда разбита!');
+        } else {
+          gameOver=true; gameOverText='ПОДРЫВ НА ГРАНАТЕ'; updateHud();
+          flashMessage('Вы подорвались на собственной гранате!');
+        }
+        continue;
+      }
+    }
+    flashMessage(killed||wounded
+      ? `Взрыв! Уничтожено: ${killed}${wounded?`, ранено: ${wounded}`:''}`
+      : 'Взрыв... никого не задело');
+  }
+  for (let i=explosions.length-1;i>=0;i--){
+    explosions[i].t+=dt;
+    if (explosions[i].t>0.85) explosions.splice(i,1);
+  }
+}
+
+// ============================================================
+// 9а. ТЕЛЕПОРТ В БЛИЖАЙШИЙ МАГАЗИН
+// ============================================================
+let teleFx=null; // {t} — визуальный эффект после прыжка
+
+function nearestShopByPath(){
+  // BFS по реально проходимым дверям (запертые — только если есть ключ)
+  const W=MAP.w, H=MAP.h, im=(x,y)=>y*W+x;
+  const seenB=new Uint8Array(W*H);
+  const q=[{x:player.x,y:player.y}];
+  seenB[im(player.x,player.y)]=1;
+  while (q.length){
+    const c=q.shift();
+    if (MAP.shops.has(`${c.x},${c.y}`) && !(c.x===player.x&&c.y===player.y)) return c;
+    for (const d of DIRS){
+      const t=sideType(c.x,c.y,d);
+      if (t==='wall') continue;
+      if (t==='locked'){
+        const lc=MAP.locks.get(doorKey(c.x,c.y,d));
+        if (lc===undefined || !inv.keys[lc]) continue;
+      }
+      const nx=c.x+DIR[d].dx, ny=c.y+DIR[d].dy;
+      if (!inBounds(nx,ny)||seenB[im(nx,ny)]) continue;
+      seenB[im(nx,ny)]=1; q.push({x:nx,y:ny});
+    }
+  }
+  return null;
+}
+
+function useTeleport(){
+  if (gameWon||gameOver) return;
+  if (inv.teleports<=0){ flashMessage('Нет телепорта — купите в магазине'); return; }
+  if (move||unlocking){ flashMessage('Нельзя телепортироваться на ходу'); return; }
+  if (inShop()){ flashMessage('Вы уже в магазине'); return; }
+  const c=nearestShopByPath();
+  if (!c){ flashMessage('Ни один магазин отсюда недостижим'); return; }
+  inv.teleports--;
+  queuedMove=null;
+  player.x=c.x; player.y=c.y;
+  visual.offsetX=0; visual.offsetY=0;
+  camX=roomCX(player.x); camY=roomCY(player.y);
+  teleFx={t:0};
+  // Телепорт полностью сбрасывает агрессию ВСЕХ монстров: они бросают погоню.
+  // Босс идёт к своему спавну пешком; остальных возвращаем к их месту сразу —
+  // вся «работа» по отвлечению монстров теряется.
+  for (const m of monsters){
+    if (m.dead) continue;
+    if (m.cross&&!m.cross.entered){ releaseDoor(m.cross.key,m); m.cross=null; }
+    if (m.cfg.boss){
+      if (m.state==='chase'||m.state==='guard'){
+        m.state='return'; m.reason='потерял игрока'; m.targetRoom=null;
+        m.alert=0; m.wanderTarget=null; m.chkT=0; m.guardCell=null;
+        m.patrolRoom=null; m.blockedWait=0; m.wanderWait=0;
+      }
+    } else {
+      // охотники и ползуны — телепорт домой
+      m.state='idle'; m.reason=''; m.targetRoom=null; m.patrolRoom=null;
+      m.alert=0; m.wanderTarget=null; m.ignoreDoorKey=null; m.chkT=0;
+      m.blockedWait=0; m.wanderWait=0; m.sated=0; m.moving=0;
+      m.room={x:m.home.x,y:m.home.y};
+      m.x=roomCX(m.home.x)+(Math.random()*2-1)*40;
+      m.y=roomCY(m.home.y)+(Math.random()*2-1)*40;
+      m.facing=Math.random()*TAU;
+    }
+  }
+  updateHud();
+  enterRoom(player.x,player.y);
+  flashMessage('Телепортация в магазин!');
+}
+
+// ============================================================
+// 10. МОНСТРЫ
+// ============================================================
+const MONSTER_TYPES={
+  // Ползун — сидит в своей комнате, чует игрока только рядом
+  monster1:{
+    id:'monster1', title:'Ползун',
+    maxHp:1,                       // стойкость: гибнет от 1 взрыва/аномалии
+    starDamage:1,                  // сколько звёзд сбивает за укус
+    sateTime:null,                 // null → берётся TUNE.sateTime (30 с)
+    chaseSpeed:85, wanderSpeed:32, size:13,
+    bodyColor:'#5a1f1f', shellColor:'#8e2b2b', legColor:'#3a1414',
+    eyeColor:'#ffd24a', auraColor:'rgba(200,40,40,',
+    sightAdjacent:true, sightNeedsPassage:true, noticeDoors:true,
+    canOpenDoors:true, canOpenLocked:false,
+    catchRadius:CATCH_R, draw:drawMonster1,
+  },
+  // Охотник — редкий бродячий хищник:
+  //   · сам ходит между комнатами (патруль в радиусе patrolRadius от точки спавна),
+  //     в аномалии и магазины по своей воле не заходит;
+  //   · видит как Ползун (соседняя комната, дверь проходима), но погнавшись
+  //     преследует далеко — пока не отстанет на pursueGiveUp комнат по пути;
+  //   · один укус = −3 звезды; поев, засыпает лишь на sateTime секунд.
+  //   ХП 8 = ровно 3 удара аномалии/гранаты (их урон 3).
+  monster2:{
+    id:'monster2', title:'Охотник',
+    maxHp:8, starDamage:3, sateTime:10,
+    patrol:true, patrolRadius:10, pursueGiveUp:5,
+    chaseSpeed:92, patrolSpeed:46, wanderSpeed:34, size:16,
+    bodyColor:'#2e2a3d', cloakColor:'#6b3fa0', cloakDark:'#3e2360',
+    beltColor:'#9a6b2f', eyeColor:'#6cf0ff', auraColor:'rgba(150,80,220,',
+    sightAdjacent:true, sightNeedsPassage:true, noticeDoors:true,
+    canOpenDoors:true, canOpenLocked:false,
+    catchRadius:CATCH_R, draw:drawMonster2,
+  },
+  // Босс «Надзиратель» — колосс-страж у выхода:
+  //   · видит СКВОЗЬ стены и по диагонали (радиус bossReact), пока игрок не уйдёт;
+  //   · заметив — преследует бесконечно: двери открывает сам, по пути ОБХОДИТ
+  //     аномалии (никогда в них не заходит), яблоки игнорирует;
+  //   · телепорт игрока в магазин сбрасывает погоню — Босс идёт обратно к своему
+  //     спавну и стоит на страже, пока игрок снова не попадёт в поле зрения;
+  //   · ХП 30 = ровно ~10 попаданий гранатой/аномалией (урон 3).
+  //     Поимка: при TUNE.bossLethal=true — мгновенная гибель.
+  monster3:{
+    id:'monster3', title:'Надзиратель', boss:true,
+    maxHp:30, starDamage:3, sateTime:null,
+    chaseSpeed:88, wanderSpeed:40, patrolSpeed:40, size:24,
+    bodyColor:'#4a1226', shellColor:'#7a1f33', armorColor:'#2b0d18',
+    plateColor:'#a8334a', runeColor:'#ffb0c0', eyeColor:'#ff5a7a',
+    beltColor:'#8a2436', auraColor:'rgba(255,40,60,',
+    sightAdjacent:false, sightNeedsPassage:false, noticeDoors:false,
+    canOpenDoors:true, canOpenLocked:false,
+    catchRadius:CATCH_R, draw:drawMonster3,
+  }
+};
+
+let monsters=[];
+let zaps=[];   // визуальные разряды аномалии {x,y,t}
+
+function damageMonster(m,dmg,cause){
+  if (m.dead) return;
+  m.hp-=dmg;
+  if (cause==='trap') zaps.push({x:m.x, y:m.y, t:0});
+  if (m.hp<=0){
+    m.dead=true;
+    if (m.cross){ releaseDoor(m.cross.key,m); m.cross=null; }
+    if (cause==='trap') flashMessage('Аномалия уничтожила монстра!');
+  } else {
+    m.stun=Math.max(m.stun,1.2);   // выживший — оглушён
+    if (cause==='trap') flashMessage('Аномалия ранила монстра!');
+  }
+}
+function purgeDead(){
+  if (monsters.some(m=>m.dead)) monsters=monsters.filter(m=>!m.dead);
+}
+
+function spawnMonster(typeId,rx,ry){
+  const cfg=MONSTER_TYPES[typeId];
+  // ХП и урон звёздами можно переопределить по сложности (см. DIFFICULTY):
+  // Охотник на лёгком — 4 ХП (2 попадания) и −2 звезды за укус.
+  const maxHp = typeId==='monster2' ? (MAP.cfg.monster2Hp||cfg.maxHp) : cfg.maxHp;
+  const starDamage = typeId==='monster2' ? (MAP.cfg.monster2Stars||cfg.starDamage) : cfg.starDamage;
+  const ang=Math.random()*TAU, rad=CENTER_R+18+Math.random()*40;
+  monsters.push({
+    cfg, maxHp, starDamage,
+    hp:maxHp, dead:false, home:{x:rx,y:ry}, room:{x:rx,y:ry},
+    x:roomCX(rx)+Math.cos(ang)*rad, y:roomCY(ry)+Math.sin(ang)*rad,
+    facing:ang, state:'idle', reason:'', targetRoom:null, cross:null,
+    ignoreDoorKey:null, wanderTarget:null, wanderWait:0,
+    patrolRoom:null, chkT:0,
+    alert:0, alertMark:'!', stun:0, sated:0, moving:0, blockedWait:0,
+  });
+}
+
+function roomLoad(rx,ry,except){
+  let n=0;
+  for (const m of monsters){
+    if (m===except) continue;
+    if (m.cross && !m.cross.entered){
+      if (m.cross.from.x===rx&&m.cross.from.y===ry) n++;
+      if (m.cross.to.x===rx  &&m.cross.to.y===ry)   n++;
+    } else if (m.room.x===rx&&m.room.y===ry) n++;
+  }
+  return n;
+}
+
+function placeMonsters(rnd){
+  monsters=[];
+  const cfg=MAP.cfg;
+  const frac=(cfg.hunterFrac!==undefined)?cfg.hunterFrac:TUNE.hunterFrac;
+
+  // комнаты магазинов и их СОСЕДИ — монстры здесь не спавнятся (безопасность телепорта)
+  const nearShop=new Set();
+  for (const k of MAP.shops){
+    const [x,y]=k.split(',').map(Number);
+    nearShop.add(k);
+    for (const d of DIRS){
+      if (MAP.rooms[y][x][d]==='wall') continue;
+      const nx=x+DIR[d].dx, ny=y+DIR[d].dy;
+      if (inBounds(nx,ny)) nearShop.add(`${nx},${ny}`);
+    }
+  }
+
+  const pathByZone=Array.from({length:MAP.NZ},()=>[]);
+  for (const p of MAP.solution)
+    if (MAP.dist[p.y*MAP.w+p.x]>8) pathByZone[zoneAt(p.x,p.y)].push(p);
+
+  const freeByZone=Array.from({length:MAP.NZ},()=>[]);
+  const zoneRooms=new Array(MAP.NZ).fill(0);
+  for (let y=0;y<MAP.h;y++) for (let x=0;x<MAP.w;x++){
+    const z=zoneAt(x,y);
+    zoneRooms[z]++;
+    if (MAP.dist[y*MAP.w+x]<7) continue;              // не у самого старта
+    if (nearShop.has(`${x},${y}`)) continue;
+    if (MAP.traps.has(`${x},${y}`)) continue;
+    let deg=0; for (const d of DIRS) if (MAP.rooms[y][x][d]!=='wall') deg++;
+    if (deg===0) continue;
+    freeByZone[z].push({x,y});
+  }
+  for (const a of freeByZone) shuffle(a,rnd);
+  for (const a of pathByZone) shuffle(a,rnd);
+
+  const used=new Map();
+  const take=c=>{
+    const k=`${c.x},${c.y}`, n=used.get(k)||0;
+    if (MAP.traps.has(k)||nearShop.has(k)) return false;
+    if (n>=ROOM_CAP) return false;
+    used.set(k,n+1); return true;
+  };
+  const BFS=(sx,sy)=>{
+    const W=MAP.w, H=MAP.h, im=(x,y)=>y*W+x;
+    const dd=new Int32Array(W*H).fill(-1);
+    if (!inBounds(sx,sy)) return dd;
+    dd[im(sx,sy)]=0; const q=[im(sx,sy)];
+    for (let h=0;h<q.length;h++){
+      const cur=q[h], x=cur%W, y=(cur/W)|0;
+      for (const d of DIRS){
+        if (MAP.rooms[y][x][d]==='wall') continue;
+        const nx=x+DIR[d].dx, ny=y+DIR[d].dy;
+        if (!inBounds(nx,ny)) continue;
+        const ni=im(nx,ny);
+        if (dd[ni]!==-1) continue;
+        dd[ni]=dd[cur]+1; q.push(ni);
+      }
+    }
+    return dd;
+  };
+
+  // ================== 1) места БОССОВ выбираем ЗАРАНЕЕ и бронируем ==================
+  // (чтобы охотники не патрулировали в районе их «обитания»)
+  const bossSpots=[];      // {x,y}
+  {
+    const nBoss=cfg.bosses||0;
+    const isShop=(x,y)=>MAP.shops.has(`${x},${y}`);
+    const degOf=(x,y)=>{ let n=0; for (const d of DIRS) if (MAP.rooms[y][x][d]!=='wall') n++; return n; };
+    const canBoss=(x,y)=>{
+      if (isShop(x,y)||MAP.traps.has(`${x},${y}`)) return false;
+      if (x===MAP.exit.x&&y===MAP.exit.y) return false;
+      if (degOf(x,y)<1) return false;
+      return true;
+    };
+    const tryPick=(cells,minD)=>{
+      for (const c of cells){
+        if (!canBoss(c.x,c.y)) continue;
+        if (MAP.dist[c.y*MAP.w+c.x]<minD) continue;
+        if (take(c)){ bossSpots.push({x:c.x,y:c.y}); return true; }
+      }
+      return false;
+    };
+    const tryFar=(minD)=>{
+      for (let g=0;g<200;g++){
+        const z=MAP.NZ-1, pool=freeByZone[z];
+        if (!pool||!pool.length) continue;
+        const c=pool[Math.floor(rnd()*pool.length)];
+        if (!canBoss(c.x,c.y)) continue;
+        if (MAP.dist[c.y*MAP.w+c.x]<minD) continue;
+        if (take(c)){ bossSpots.push({x:c.x,y:c.y}); return true; }
+      }
+      return false;
+    };
+    if (nBoss>=1){
+      const nearExit=MAP.solution.slice(-Math.max(8,Math.min(18,MAP.solution.length-1)));
+      const cells=nearExit.slice(0,-1).reverse().map(c=>({x:c.x,y:c.y}));
+      if (!tryPick(cells,0)) tryFar(14);
+    }
+    if (nBoss>=2){
+      const W=MAP.w, im=(x,y)=>y*W+x;
+      const dExit=BFS(MAP.exit.x,MAP.exit.y);
+      const ringOf=(x,y)=>Math.max(Math.abs(x-MAP.cx),Math.abs(y-MAP.cy));
+      const minFar=Math.floor(MAP.pathLen*0.42);
+      let cands=[];
+      for (let y=0;y<MAP.h;y++) for (let x=0;x<MAP.w;x++){
+        if (!canBoss(x,y)) continue;
+        if (dExit[im(x,y)]<minFar) continue;
+        if (ringOf(x,y)<MAP.maxRing-1) continue;
+        cands.push({x,y,df:dExit[im(x,y)]});
+      }
+      cands.sort((p,q)=>q.df-p.df);
+      const pool=cands.slice(0,Math.min(14,cands.length));
+      shuffle(pool,rnd);
+      if (!tryPick(pool,0)) tryFar(16);
+    }
+  }
+
+  // ================== 2) ОХОТНИКИ — у краёв, на пути к выходу, но НЕ у боссов ==================
+  // Сначала карта лёгкая (у старта охотников нет); они встречаются во внешних
+  // зонах — там, где можно ждать выход. Патруль (10 комнат) не достаёт до старта
+  // и до «обитания» боссов.
+  const hunterPatrolR=10;                    // как MONSTER_TYPES.monster2.patrolRadius
+  const minStartDist=Math.max(hunterPatrolR+1,Math.floor(MAP.pathLen*0.40));
+  const dExitMap=BFS(MAP.exit.x,MAP.exit.y);
+  const W=MAP.w, im2=(x,y)=>y*W+x;
+
+  const sumZone=zoneRooms.map((r,z)=>Math.round(r*(cfg.density[z]||0)));
+  const sumN=sumZone.reduce((a,b)=>a+b,0);
+  let huntersLeft=Math.round(sumN*frac);
+  const huntersByZone=new Array(MAP.NZ).fill(0);
+
+  const eligibleHunter=(x,y)=>{
+    if (x===MAP.start.x&&y===MAP.start.y) return false;
+    if (MAP.dist[y*W+x]<minStartDist) return false;         // далеко от старта
+    const de=dExitMap[im2(x,y)];
+    if (de>=0&&de<6) return false;                           // не у самого выхода (там стража)
+    for (const bp of bossSpots){                             // патруль не пересекает боссов
+      if (Math.max(Math.abs(x-bp.x),Math.abs(y-bp.y))<=hunterPatrolR) return false;
+    }
+    return true;
+  };
+
+  // идём от самой внешней зоны внутрь; в ядре (z=0) охотников не бывает
+  for (let z=MAP.NZ-1;z>=1&&huntersLeft>0;z--){
+    if (sumZone[z]<=0) continue;
+    const cands=[];
+    for (const c of pathByZone[z]) if (eligibleHunter(c.x,c.y)) cands.push(c);
+    for (const c of freeByZone[z]) if (eligibleHunter(c.x,c.y)) cands.push(c);
+    shuffle(cands,rnd);
+    // не больше, чем квота зоны (чтобы не раздувать население)
+    const cap=Math.min(huntersLeft,sumZone[z],Math.max(0,sumZone[z]-huntersByZone[z]));
+    let got=0;
+    for (const c of cands){
+      if (got>=cap||huntersLeft<=0) break;
+      if (!take(c)) continue;
+      huntersByZone[z]++; got++; huntersLeft--;
+      spawnMonster('monster2',c.x,c.y);
+    }
+  }
+
+  // ================== 3) остальные монстры (Ползуны) по зонам ==================
+  for (let z=0;z<MAP.NZ;z++){
+    const n=Math.max(0,sumZone[z]-huntersByZone[z]);
+    const bias=cfg.onPath[z]||0;
+    for (let i=0;i<n;i++){
+      let cell=null, guard=0;
+      while (guard++<40){
+        const src=(rnd()<bias&&pathByZone[z].length)?pathByZone[z]:freeByZone[z];
+        if (!src.length) break;
+        const c=src.pop();
+        if (take(c)){ cell=c; break; }
+      }
+      if (cell) spawnMonster('monster1',cell.x,cell.y);
+    }
+  }
+
+  // ================== 4) стража у выхода — только Ползуны ==================
+  {
+    const tail=MAP.solution.slice(-Math.min(10,MAP.solution.length-1));
+    shuffle(tail,rnd);
+    for (let i=0;i<cfg.exitGuards;i++){
+      const c=tail[i%tail.length];
+      if (!c) break;
+      if (c.x===MAP.exit.x&&c.y===MAP.exit.y) continue;
+      if (take(c)) spawnMonster('monster1',c.x,c.y);
+    }
+  }
+
+  // ================== 5) сами Боссы ==================
+  for (const bp of bossSpots) spawnMonster('monster3',bp.x,bp.y);
+}
+function monsterCanPass(m,rx,ry,dir){
+  const t=sideType(rx,ry,dir);
+  if (t==='wall') return false;
+  if (t==='locked'&&!m.cfg.canOpenLocked) return false;
+  return true;
+}
+const isOrthAdjacent=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y)===1;
+function dirBetween(f,t){
+  for (const d of DIRS) if (f.x+DIR[d].dx===t.x&&f.y+DIR[d].dy===t.y) return d;
+  return null;
+}
+
+// Дверь «занята», если ДРУГОЙ монстр уже переходит через неё. Так два монстра не
+// встают друг напротив друга в одном проёме и не блокируют друг друга навсегда.
+function doorBusy(key,me){
+  for (const o of monsters){
+    if (o===me||o.dead) continue;
+    if (o.cross&&o.cross.key===key) return true;
+  }
+  return false;
+}
+// Дистанция, ближе которой монстры расталкиваются (босс — крупный, ему дают дорогу).
+function pairSep(a,b){
+  if (a.cfg.boss||b.cfg.boss) return MONSTER_SEP+22;
+  if (a.cfg.id==='monster2'||b.cfg.id==='monster2') return MONSTER_SEP+5;
+  return MONSTER_SEP;
+}
+
+// «Ранг» монстра: Ползун=1, Охотник=2, Босс=3.
+// Младшие расступаются и уступают дорогу старшим.
+function monRank(m){ return m.cfg.boss?3:(m.cfg.id==='monster2'?2:1); }
+
+// Монстры, находящиеся в комнате или только входящие в неё.
+function roomOccupants(rx,ry,except){
+  const out=[];
+  for (const o of monsters){
+    if (o===except||o.dead) continue;
+    if (o.room.x===rx&&o.room.y===ry) out.push(o);
+    else if (o.cross&&!o.cross.entered&&o.cross.to.x===rx&&o.cross.to.y===ry) out.push(o);
+  }
+  return out;
+}
+
+// Заставить монстра уступить дорогу — выйти из комнаты через другую дверь
+// (не ту, в которую входит старший; по возможности не в аномалию).
+function makeWay(mon,blockedKey){
+  if (mon.cross||mon.dead) return false;
+  const dirs=DIRS.slice(); shuffle(dirs,Math.random);
+  let fallback=null;
+  for (const d of dirs){
+    const key=doorKey(mon.room.x,mon.room.y,d);
+    if (key===blockedKey) continue;
+    const t=sideType(mon.room.x,mon.room.y,d);
+    if (t==='wall'||t==='locked') continue;
+    const nx=mon.room.x+DIR[d].dx, ny=mon.room.y+DIR[d].dy;
+    if (!inBounds(nx,ny)) continue;
+    if (MAP.traps.has(`${nx},${ny}`)){ if(!fallback) fallback={key,d,nx,ny}; continue; }
+    if (roomLoad(nx,ny,mon)>=ROOM_CAP) continue;
+    // приоритетная дверь найдена — уходим
+    mon.targetRoom=null; mon.patrolRoom=null; mon.ignoreDoorKey=null;
+    mon.wanderTarget=null; mon.wanderWait=0; mon.alert=0;
+    mon.reason='уступает дорогу';
+    mon.cross={key,dir:d, from:{x:mon.room.x,y:mon.room.y}, to:{x:nx,y:ny},
+      stage:'approach', requested:false, entered:false};
+    return true;
+  }
+  if (fallback){
+    const {key,d,nx,ny}=fallback;
+    mon.targetRoom=null; mon.patrolRoom=null; mon.ignoreDoorKey=null;
+    mon.wanderTarget=null; mon.wanderWait=0; mon.alert=0;
+    mon.reason='уступает дорогу';
+    mon.cross={key,dir:d, from:{x:mon.room.x,y:mon.room.y}, to:{x:nx,y:ny},
+      stage:'approach', requested:false, entered:false};
+    return true;
+  }
+  return false;
+}
+
+// Освободить место в комнате для монстра старшего ранга: выселить младшего.
+function evictFor(actor,tx,ty,blockedKey){
+  const ar=monRank(actor);
+  if (ar<=1) return false;
+  const occ=roomOccupants(tx,ty,actor)
+    .filter(o=>monRank(o)<ar && !(o.cfg.boss));
+  if (!occ.length) return false;
+  occ.sort((p,q)=> (monRank(p)-monRank(q)) ||
+                   (Number(p.state==='chase')-Number(q.state==='chase')) ||
+                   (Number(p.cross?1:0)-Number(q.cross?1:0)));
+  for (const o of occ){ if (makeWay(o,blockedKey)) return true; }
+  return false;
+}
+
+function bfsNextDir(m,from,to){
+  if (from.x===to.x&&from.y===to.y) return null;
+  const W=MAP.w, idx=(x,y)=>y*W+x;
+  const prev=new Map(), vis=new Set([idx(from.x,from.y)]);
+  const q=[{x:from.x,y:from.y}];
+  for (let h=0;h<q.length;h++){
+    const cur=q[h];
+    for (const d of DIRS){
+      if (!monsterCanPass(m,cur.x,cur.y,d)) continue;
+      const nx=cur.x+DIR[d].dx, ny=cur.y+DIR[d].dy;
+      if (!inBounds(nx,ny)) continue;
+      const k=idx(nx,ny);
+      if (vis.has(k)) continue;
+      vis.add(k); prev.set(k,{x:cur.x,y:cur.y,d});
+      if (nx===to.x&&ny===to.y){
+        let cx=nx,cy=ny;
+        for(;;){
+          const p=prev.get(idx(cx,cy));
+          if (p.x===from.x&&p.y===from.y) return p.d;
+          cx=p.x; cy=p.y;
+        }
+      }
+      q.push({x:nx,y:ny});
+    }
+  }
+  return null;
+}
+
+function setChase(m,room,reason,mark){
+  if (m.state!=='chase'){ m.alert=1.4; m.alertMark=mark; }
+  m.state='chase'; m.reason=reason;
+  m.targetRoom={x:room.x,y:room.y};
+  m.wanderTarget=null; m.wanderWait=0;
+}
+
+function updateMonsterSenses(m){
+  if (m.stun>0) return false;
+  const cfg=m.cfg, pr=playerRoomForAI();
+  if (pr.x===m.room.x&&pr.y===m.room.y){ setChase(m,pr,'sight','!'); return true; }
+  if (cfg.sightAdjacent&&isOrthAdjacent(m.room,pr)){
+    const d=dirBetween(m.room,pr);
+    if (!cfg.sightNeedsPassage||monsterCanPass(m,m.room.x,m.room.y,d)){
+      setChase(m,pr,'sight','!'); return true;
+    }
+  }
+  return false;
+}
+
+function onMonsterEnterRoom(m){
+  if (!m.cfg.noticeDoors) return;
+  let best=null,bestA=0;
+  for (const d of DIRS){
+    if (!monsterCanPass(m,m.room.x,m.room.y,d)) continue;
+    const key=doorKey(m.room.x,m.room.y,d);
+    if (key===m.ignoreDoorKey) continue;
+    const a=doorAnims.get(key);
+    if (!a||a.users.has(m)) continue;
+    if (Math.abs(a.angle)>bestA){ bestA=Math.abs(a.angle); best=d; }
+  }
+  if (best) setChase(m,{x:m.room.x+DIR[best].dx,y:m.room.y+DIR[best].dy},'trail','?');
+}
+
+function centerObstacle(m){
+  const pr=playerRoomForAI();
+  if (pr.x===m.room.x&&pr.y===m.room.y) return null;
+  // центр комнаты монстры обходят (там могут лежать предметы/звезды);
+  // крупный Охотник обходит чуть шире. Босс obstacle не использует вовсе.
+  let r=CENTER_R;
+  if (m.cfg.id==='monster2') r+=8;
+  return {x:roomCX(m.room.x), y:roomCY(m.room.y), r};
+}
+
+function steerMove(m,tx,ty,speed,dt,useObstacle){
+  const dx=tx-m.x, dy=ty-m.y, dist=Math.hypot(dx,dy);
+  if (dist<1){ m.moving=0; return true; }
+  let ux=dx/dist, uy=dy/dist;
+
+  const obs=useObstacle?centerObstacle(m):null;
+  if (obs){
+    const rx=m.x-obs.x, ry=m.y-obs.y, rd=Math.hypot(rx,ry)||0.001;
+    const field=obs.r+28;
+    if (rd<field){
+      const nx=rx/rd, ny=ry/rd;
+      const t1x=-ny,t1y=nx, t2x=ny,t2y=-nx;
+      const use1=(t1x*ux+t1y*uy)>(t2x*ux+t2y*uy);
+      const tgx=use1?t1x:t2x, tgy=use1?t1y:t2y;
+      const w=clamp((field-rd)/field,0,1);
+      ux=ux*(1-w)+(tgx*0.9+nx*0.5)*w;
+      uy=uy*(1-w)+(tgy*0.9+ny*0.5)*w;
+      const l=Math.hypot(ux,uy)||1; ux/=l; uy/=l;
+    }
+  }
+
+  let px=0,py=0;
+  for (const o of monsters){
+    if (o===m) continue;
+    if (Math.abs(o.room.x-m.room.x)>1||Math.abs(o.room.y-m.room.y)>1) continue;
+    const ddx=m.x-o.x, ddy=m.y-o.y, d2=ddx*ddx+ddy*ddy;
+    const sep=pairSep(m,o);
+    if (d2>0&&d2<sep*sep){
+      const d=Math.sqrt(d2), w=(sep-d)/sep;
+      // младший ранг отходит от старшего сильнее — дорогу уступает
+      const rm=monRank(m), ro=monRank(o);
+      const ww = ro>rm ? w*2.2 : (rm>ro ? w*0.3 : w);
+      px+=ddx/d*ww; py+=ddy/d*ww;
+    }
+  }
+  if (px||py){
+    ux+=px*1.3; uy+=py*1.3;
+    const l=Math.hypot(ux,uy)||1; ux/=l; uy/=l;
+  }
+
+  const step=Math.min(speed*dt,dist);
+  m.x+=ux*step; m.y+=uy*step;
+
+  if (obs){
+    const rx=m.x-obs.x, ry=m.y-obs.y, rd=Math.hypot(rx,ry);
+    if (rd<obs.r&&rd>0.001){ m.x=obs.x+rx/rd*obs.r; m.y=obs.y+ry/rd*obs.r; }
+  }
+
+  m.moving=speed;
+  let diff=Math.atan2(uy,ux)-m.facing;
+  while(diff>Math.PI) diff-=TAU;
+  while(diff<-Math.PI) diff+=TAU;
+  m.facing+=diff*Math.min(1,dt*8);
+  return step>=dist;
+}
+
+function resolveOverlaps(){
+  // активные монстры всегда в пределах MONSTER_ACTIVE_RANGE от игрока —
+  // поэтому чиним перекрытия во всей «живой» зоне, а не только у игрока
+  const near=monsters.filter(m=>
+    Math.max(Math.abs(m.room.x-player.x),Math.abs(m.room.y-player.y))<=MONSTER_ACTIVE_RANGE);
+  for (let i=0;i<near.length;i++){
+    const a=near[i];
+    for (let j=i+1;j<near.length;j++){
+      const b=near[j];
+      const sep=pairSep(a,b);
+      const dx=b.x-a.x, dy=b.y-a.y, d2=dx*dx+dy*dy;
+      if (d2>=sep*sep||d2<0.0001) continue;
+      const d=Math.sqrt(d2), push=sep-d;
+      const nx=dx/d, ny=dy/d;
+      // распределение: младший ранг отходит почти весь, старший — чуть-чуть
+      const ra=monRank(a), rb=monRank(b);
+      let fa,fb;
+      if (ra===rb){ fa=0.5; fb=0.5; }
+      else if (ra>rb){ fa=0.12; fb=0.88; }
+      else { fa=0.88; fb=0.12; }
+      a.x-=nx*push*fa; a.y-=ny*push*fa;
+      b.x+=nx*push*fb; b.y+=ny*push*fb;
+    }
+  }
+}
+
+function wanderPoint(m){
+  const mg=ROOM_SIZE*0.5-38;
+  for (let i=0;i<12;i++){
+    const x=roomCX(m.room.x)+(Math.random()*2-1)*mg;
+    const y=roomCY(m.room.y)+(Math.random()*2-1)*mg;
+    if (Math.hypot(x-roomCX(m.room.x), y-roomCY(m.room.y))>CENTER_R+26) return {x,y};
+  }
+  const a=Math.random()*TAU, r=CENTER_R+40;
+  return {x:roomCX(m.room.x)+Math.cos(a)*r, y:roomCY(m.room.y)+Math.sin(a)*r};
+}
+
+// Длина пути (по проходимым для монстра дверям) от from до to, если <= maxLen.
+function bfsRoomDist(m,fr,to,maxLen){
+  if (fr.x===to.x&&fr.y===to.y) return 0;
+  const W=MAP.w, kk=(x,y)=>y*W+x;
+  const seen=new Set([kk(fr.x,fr.y)]);
+  const q=[{x:fr.x,y:fr.y,d:0}];
+  for (let h=0;h<q.length;h++){
+    const c=q[h];
+    if (c.d>=maxLen) continue;
+    for (const d of DIRS){
+      if (!monsterCanPass(m,c.x,c.y,d)) continue;
+      const nx=c.x+DIR[d].dx, ny=c.y+DIR[d].dy;
+      if (!inBounds(nx,ny)) continue;
+      const k=kk(nx,ny);
+      if (seen.has(k)) continue;
+      if (nx===to.x&&ny===to.y) return c.d+1;
+      seen.add(k); q.push({x:nx,y:ny,d:c.d+1});
+    }
+  }
+  return -1;
+}
+
+// Охотник выбирает пункт патруля: комната в радиусе patrolRadius от точки спавна,
+// достижимая отсюда, без аномалий и магазинов. Любит дальние уголки «своей зоны».
+function choosePatrolRoom(m){
+  const R=m.cfg.patrolRadius||8;
+  const W=MAP.w, kk=(x,y)=>y*W+x;
+  const okRoom=(x,y)=>{
+    const k=`${x},${y}`;
+    return !(MAP.traps.has(k)||MAP.shops.has(k));
+  };
+  const homeDist=new Map();   // "x,y" → дистанция от дома
+  {
+    const q=[{x:m.home.x,y:m.home.y,d:0}];
+    const seen=new Set([kk(m.home.x,m.home.y)]);
+    homeDist.set(`${m.home.x},${m.home.y}`,0);
+    for (let h=0;h<q.length;h++){
+      const c=q[h];
+      if (c.d>=R) continue;
+      for (const d of DIRS){
+        if (!monsterCanPass(m,c.x,c.y,d)) continue;
+        const nx=c.x+DIR[d].dx, ny=c.y+DIR[d].dy;
+        if (!inBounds(nx,ny)) continue;
+        const k=kk(nx,ny);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        if (okRoom(nx,ny)){
+          q.push({x:nx,y:ny,d:c.d+1});
+          if (!homeDist.has(`${nx},${ny}`)) homeDist.set(`${nx},${ny}`,c.d+1);
+        }
+      }
+    }
+  }
+  const opts=[];
+  {
+    const q=[{x:m.room.x,y:m.room.y,d:0}];
+    const seen=new Set([kk(m.room.x,m.room.y)]);
+    for (let h=0;h<q.length;h++){
+      const c=q[h];
+      if (c.d>0&&c.d<=R*2){
+        const hd=homeDist.get(`${c.x},${c.y}`);
+        if (hd!==undefined) opts.push({x:c.x,y:c.y,d:c.d,home:hd});
+      }
+      if (c.d>=R*2) continue;
+      for (const d of DIRS){
+        if (!monsterCanPass(m,c.x,c.y,d)) continue;
+        const nx=c.x+DIR[d].dx, ny=c.y+DIR[d].dy;
+        if (!inBounds(nx,ny)) continue;
+        const k=kk(nx,ny);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        if (okRoom(nx,ny)) q.push({x:nx,y:ny,d:c.d+1});
+      }
+    }
+  }
+  if (!opts.length) return null;
+  const far=opts.filter(o=>o.home>=Math.max(2,Math.floor(R*0.6)));
+  const pool=far.length?far:opts;
+  return pool[Math.floor(Math.random()*pool.length)];
+}
+
+function updateMonster(m,dt){
+  const cfg=m.cfg;
+  if (cfg.boss){ updateBossMonster(m,dt); return; }   // Босс — своя логика
+  if (m.dead) return;
+  if (m.alert>0) m.alert-=dt;
+  if (m.blockedWait>0) m.blockedWait-=dt;
+  if (m.stun>0){ m.stun-=dt; m.moving=0; return; }
+  if (m.sated>0){ m.sated-=dt; m.moving=0; m.state='idle'; m.reason='сыт'; return; }
+  if (gameOver||gameWon){ m.moving=0; return; }
+
+  const far=Math.max(Math.abs(m.room.x-player.x),Math.abs(m.room.y-player.y))>MONSTER_ACTIVE_RANGE;
+  if (far&&!m.cross){ m.moving=0; return; }
+
+  // скорость: бег за игроком — chaseSpeed; свой патруль — patrolSpeed
+  const run=(cfg.patrol&&m.state!=='chase') ? (cfg.patrolSpeed||cfg.wanderSpeed) : cfg.chaseSpeed;
+
+  updateMonsterSenses(m);
+
+  // Преследователь (Охотник): не бросает погоню, когда игрок скрылся из виду,
+  // а держится за ним, пока тот не оторвётся на pursueGiveUp комнат (по пути).
+  if (cfg.pursueGiveUp>0&&m.state==='chase'){
+    const pr=playerRoomForAI();
+    if (pr.x===m.room.x&&pr.y===m.room.y){
+      m.targetRoom={x:pr.x,y:pr.y};
+    } else {
+      m.chkT-=dt;
+      if (m.chkT<=0){
+        m.chkT=0.4;
+        const len=bfsRoomDist(m,m.room,pr,m.cfg.pursueGiveUp);
+        if (len<0){
+          m.state='idle'; m.reason='потерял'; m.alert=0;
+          m.targetRoom=null; m.patrolRoom=null; m.ignoreDoorKey=null;
+          m.wanderTarget=null; m.wanderWait=1.0; m.moving=0;
+          return;
+        }
+        m.targetRoom={x:pr.x,y:pr.y};
+      }
+    }
+  }
+
+  if (m.cross){
+    const cr=m.cross, dc=doorCenter(cr.from.x,cr.from.y,cr.dir);
+    if (!cr.entered&&m.targetRoom&&m.targetRoom.x===cr.from.x&&m.targetRoom.y===cr.from.y){
+      releaseDoor(cr.key,m); m.cross=null; return;
+    }
+    if (cr.stage==='approach'){
+      if (cfg.canOpenDoors&&Math.hypot(dc.x-m.x,dc.y-m.y)<ROOM_SIZE*0.45&&!cr.requested){
+        requestDoorOpen(cr.key,SWING_BY_DIR[cr.dir],m); cr.requested=true;
+      }
+      if (steerMove(m,dc.x,dc.y,run,dt,true)){
+        if (doorPassable(cr.key)) cr.stage='pass'; else m.moving=0;
+      }
+      return;
+    }
+    const ex=dc.x+DIR[cr.dir].dx*ROOM_SIZE*0.38;
+    const ey=dc.y+DIR[cr.dir].dy*ROOM_SIZE*0.38;
+    const done=steerMove(m,ex,ey,run,dt,false);
+    if (!cr.entered){
+      const axis=DIR[cr.dir].dx+DIR[cr.dir].dy;
+      const along=(DIR[cr.dir].dx!==0)?(m.x-dc.x):(m.y-dc.y);
+      if (along*axis>0){
+        cr.entered=true;
+        m.room={x:cr.to.x,y:cr.to.y};
+        m.ignoreDoorKey=cr.key;
+        if (MAP.traps.has(`${cr.to.x},${cr.to.y}`)){
+          damageMonster(m,TUNE.trapDamage,'trap');
+          if (m.dead) return;
+        }
+        if (!updateMonsterSenses(m)) onMonsterEnterRoom(m);
+      }
+    }
+    if (done){ releaseDoor(cr.key,m); m.cross=null; }
+    return;
+  }
+
+  // --- ЯБЛОКО-ПРИМАНКА в комнате ---
+  // Ползун и Охотник идут к яблоку (оно в центре комнаты), берут его и засыпают
+  // здесь же. Погоня и патруль прерываются — яблоко отвлекает. Босс не реагирует.
+  const ap=appleInRoom(m.room.x,m.room.y);
+  if (ap){
+    const cx=roomCX(m.room.x)+(ap.ox||0), cy=roomCY(m.room.y)+(ap.oy||0);
+    // отменить неоконченный переход (яблоко в ЭТОЙ комнате — не уходим)
+    if (m.cross&&!m.cross.entered){ releaseDoor(m.cross.key,m); m.cross=null; }
+    m.targetRoom=null; m.patrolRoom=null; m.ignoreDoorKey=null; m.alert=0;
+    // к яблоку идём напрямую (цель — само яблоко, чуть от центра)
+    const sp=Math.max((cfg.patrol?cfg.chaseSpeed:cfg.wanderSpeed)*1.2,40);
+    const close=steerMove(m,cx,cy,sp,dt,false);
+    if (close||Math.hypot(m.x-cx,m.y-cy)<34){
+      if (eatApple(m)){
+        updateHud();
+        flashMessage(`${m.cfg.title} съел яблоко и заснул в комнате`);
+      }
+    }
+    return;
+  }
+
+  const pr=playerRoomForAI();
+  if (pr.x===m.room.x&&pr.y===m.room.y){
+    const p=playerWorld(), t=clampToRoom(p,m.room,14);
+    steerMove(m,t.x,t.y,cfg.chaseSpeed,dt,false);
+    if (!gameWon&&!gameOver&&Math.hypot(p.x-m.x,p.y-m.y)<cfg.catchRadius) onCatch(m);
+    return;
+  }
+
+  // движение к цели (преследование или пункт патруля) через двери
+  if (m.targetRoom&&(m.targetRoom.x!==m.room.x||m.targetRoom.y!==m.room.y)&&m.blockedWait<=0){
+    const d=bfsNextDir(m,m.room,m.targetRoom);
+    if (d){
+      const nx=m.room.x+DIR[d].dx, ny=m.room.y+DIR[d].dy;
+      const playerThere=(pr.x===nx&&pr.y===ny);
+      // Охотник выше рангом Ползуна: из забитой комнаты выселяем младших
+      for (let e=0;e<3&&roomLoad(nx,ny,m)>=ROOM_CAP;e++){
+        if (!evictFor(m,nx,ny,doorKey(m.room.x,m.room.y,d))) break;
+      }
+      if (!playerThere&&roomLoad(nx,ny,m)>=ROOM_CAP){
+        m.blockedWait=0.5+Math.random()*0.6;
+      } else {
+        const dkey=doorKey(m.room.x,m.room.y,d);
+        if (doorBusy(dkey,m)){
+          // кто-то уже идёт через эту дверь — подождём в комнате, а не в проёме
+          m.blockedWait=0.5+Math.random()*0.7; m.wanderTarget=null;
+        } else {
+          m.cross={key:dkey, dir:d,
+            from:{x:m.room.x,y:m.room.y}, to:{x:nx,y:ny},
+            stage:'approach', requested:false, entered:false};
+          return;
+        }
+      }
+    } else m.targetRoom=null;
+  }
+
+  if (m.blockedWait>0){
+    if (!m.wanderTarget) m.wanderTarget=wanderPoint(m);
+    if (steerMove(m,m.wanderTarget.x,m.wanderTarget.y,cfg.wanderSpeed,dt,true)) m.wanderTarget=null;
+    return;
+  }
+
+  // --- бродячий монстр (Охотник): ходит между комнатами ---
+  if (cfg.patrol){
+    m.state='patrol';
+    if (m.patrolRoom&&m.patrolRoom.x===m.room.x&&m.patrolRoom.y===m.room.y){
+      // дошёл до пункта — передохнёт и выберет следующий
+      m.patrolRoom=null; m.targetRoom=null; m.ignoreDoorKey=null;
+      m.wanderTarget=null; m.wanderWait=0.6+Math.random()*1.8;
+    }
+    if (m.wanderWait>0){ m.wanderWait-=dt; m.moving=0; return; }
+    if (!m.patrolRoom&&!m.targetRoom){
+      const c=choosePatrolRoom(m);
+      if (c){ m.patrolRoom={x:c.x,y:c.y}; m.targetRoom={x:c.x,y:c.y}; m.wanderTarget=null; return; }
+      // некуда идти — просто шатается по комнате
+      if (!m.wanderTarget) m.wanderTarget=wanderPoint(m);
+      if (steerMove(m,m.wanderTarget.x,m.wanderTarget.y,cfg.wanderSpeed,dt,true)){
+        m.wanderTarget=null; m.wanderWait=0.5+Math.random()*1.5;
+      }
+      return;
+    }
+    return; // в пути — движение продолжит блок выше в следующем кадре
+  }
+
+  // --- сидячий монстр (Ползун): шатается в своей комнате ---
+  m.state='idle'; m.reason=''; m.targetRoom=null; m.ignoreDoorKey=null;
+  if (m.wanderWait>0){ m.wanderWait-=dt; m.moving=0; return; }
+  if (!m.wanderTarget) m.wanderTarget=wanderPoint(m);
+  if (steerMove(m,m.wanderTarget.x,m.wanderTarget.y,cfg.wanderSpeed,dt,true)){
+    m.wanderTarget=null; m.wanderWait=0.4+Math.random()*1.6;
+  }
+}
+
+// ============================================================
+// 10а. БОСС «НАДЗИРАТЕЛЬ» — отдельная логика
+// ============================================================
+function bossSenseRange(){ return 1; }   // видит ТОЛЬКО соседнюю клетку (и по диагонали, и сквозь стену)
+
+// Первый шаг пути к цели в ОБХОД аномалий (Босс в аномалию никогда не входит).
+function bossNextDir(m,to){
+  if (m.room.x===to.x&&m.room.y===to.y) return null;
+  const W=MAP.w, idx=(x,y)=>y*W+x, from=m.room;
+  const q=[{x:from.x,y:from.y}], vis=new Set([idx(from.x,from.y)]), prev=new Map();
+  for (let h=0;h<q.length;h++){
+    const cur=q[h];
+    for (const d of DIRS){
+      if (!monsterCanPass(m,cur.x,cur.y,d)) continue;
+      const nx=cur.x+DIR[d].dx, ny=cur.y+DIR[d].dy;
+      if (!inBounds(nx,ny)) continue;
+      if (MAP.traps.has(`${nx},${ny}`)) continue;   // аномалии обходит всегда
+      const k=idx(nx,ny);
+      if (vis.has(k)) continue;
+      vis.add(k); prev.set(k,{x:cur.x,y:cur.y,d});
+      if (nx===to.x&&ny===to.y){
+        let cx=nx, cy=ny;
+        for(;;){
+          const p=prev.get(idx(cx,cy));
+          if (p.x===from.x&&p.y===from.y) return p.d;
+          cx=p.x; cy=p.y;
+        }
+      }
+      q.push({x:nx,y:ny});
+    }
+  }
+  return null;
+}
+
+// Босс НЕ обходит центр комнаты: идёт сквозь него. Все движения — без обхода.
+function bossPace(m,dt,speed){
+  if (m.wanderWait>0){ m.wanderWait-=dt; m.moving=0; return; }
+  if (!m.wanderTarget){
+    const a=Math.random()*TAU, rr=26+Math.random()*55;
+    m.wanderTarget={x:roomCX(m.room.x)+Math.cos(a)*rr, y:roomCY(m.room.y)+Math.sin(a)*rr};
+  }
+  if (steerMove(m,m.wanderTarget.x,m.wanderTarget.y,speed,dt,false)){
+    m.wanderTarget=null; m.wanderWait=0.5+Math.random()*1.4;
+  }
+}
+
+// Комната для «прогулки» Босса в покое: в радиусе 3 комнат от спавна.
+// Он не сидит на месте, но и не уходит далеко от своего поста.
+function bossPatrolSpot(m){
+  const home=m.home, W=MAP.w, kk=(x,y)=>y*W+x, R=3;
+  const cands=[];
+  const seen=new Set([kk(home.x,home.y)]);
+  const q=[{x:home.x,y:home.y}];
+  for (let h=0;h<q.length;h++){
+    const c=q[h];
+    cands.push(c);
+    for (const d of DIRS){
+      if (!monsterCanPass(m,c.x,c.y,d)) continue;
+      const nx=c.x+DIR[d].dx, ny=c.y+DIR[d].dy;
+      if (!inBounds(nx,ny)) continue;
+      const k=kk(nx,ny);
+      if (seen.has(k)) continue;
+      if (MAP.traps.has(`${nx},${ny}`)||MAP.shops.has(`${nx},${ny}`)) continue;
+      seen.add(k);
+      if (Math.abs(nx-home.x)+Math.abs(ny-home.y)<=R) q.push({x:nx,y:ny});
+    }
+  }
+  const others=cands.filter(c=>!(c.x===m.room.x&&c.y===m.room.y));
+  const pool=others.length?others:cands;
+  return pool[Math.floor(Math.random()*pool.length)];
+}
+
+// Начать переход через дверь. Босс выше рангом: из полной комнаты младшие уходят.
+function bossStartCross(m,dir){
+  const dkey=doorKey(m.room.x,m.room.y,dir);
+  if (doorBusy(dkey,m)){ m.blockedWait=0.5+Math.random()*0.6; return false; }
+  const nx=m.room.x+DIR[dir].dx, ny=m.room.y+DIR[dir].dy;
+  // Босс — высший ранг: из набитой комнаты младших «просим» расступиться
+  // (они начинают уходить сами) и проходим, не дожидаясь полного освобождения.
+  for (let e=0;e<4&&roomLoad(nx,ny,m)>=ROOM_CAP;e++){
+    if (!evictFor(m,nx,ny,dkey)) break;
+  }
+  m.cross={key:dkey, dir,
+    from:{x:m.room.x,y:m.room.y}, to:{x:nx,y:ny},
+    stage:'approach', requested:false, entered:false};
+  return true;
+}
+
+function bossStepCross(m,dt){
+  const cfg=m.cfg, cr=m.cross, dc=doorCenter(cr.from.x,cr.from.y,cr.dir);
+  const speed=(m.state==='chase')?cfg.chaseSpeed:cfg.patrolSpeed;
+  if (cr.stage==='approach'){
+    if (cfg.canOpenDoors&&Math.hypot(dc.x-m.x,dc.y-m.y)<ROOM_SIZE*0.45&&!cr.requested){
+      requestDoorOpen(cr.key,SWING_BY_DIR[cr.dir],m); cr.requested=true;
+    }
+    if (steerMove(m,dc.x,dc.y,speed,dt,false)){
+      if (doorPassable(cr.key)) cr.stage='pass'; else m.moving=0;
+    }
+    return;
+  }
+  const ex=dc.x+DIR[cr.dir].dx*ROOM_SIZE*0.38;
+  const ey=dc.y+DIR[cr.dir].dy*ROOM_SIZE*0.38;
+  const done=steerMove(m,ex,ey,speed,dt,false);
+  if (!cr.entered){
+    const axis=DIR[cr.dir].dx+DIR[cr.dir].dy;
+    const along=(DIR[cr.dir].dx!==0)?(m.x-dc.x):(m.y-dc.y);
+    if (along*axis>0){
+      cr.entered=true;
+      m.room={x:cr.to.x,y:cr.to.y};
+      m.ignoreDoorKey=cr.key;
+      if (MAP.traps.has(`${cr.to.x},${cr.to.y}`)){
+        damageMonster(m,TUNE.trapDamage,'trap');   // страховка
+        if (m.dead) return;
+      }
+      m.chkT=0;
+    }
+  }
+  if (done){ releaseDoor(cr.key,m); m.cross=null; }
+}
+
+// Соседние проходимые комнаты вокруг укрытия игрока (сама аномалия исключена).
+function bossGuardCells(pr){
+  const out=[];
+  for (const d of DIRS){
+    const nx=pr.x+DIR[d].dx, ny=pr.y+DIR[d].dy;
+    if (!inBounds(nx,ny)) continue;
+    if (MAP.rooms[pr.y][pr.x][d]==='wall') continue;
+    const k=`${nx},${ny}`;
+    if (MAP.traps.has(k)||MAP.shops.has(k)) continue;
+    out.push({x:nx,y:ny});
+  }
+  return out;
+}
+
+// «Караул» вокруг аномалии: Босс не входит в неё, но кружит рядом, меняя позиции.
+function bossGuardStep(m,dt){
+  const cfg=m.cfg, pr=playerRoomForAI();
+  if (m.guardCell&&m.room.x===m.guardCell.x&&m.room.y===m.guardCell.y){
+    m.guardCell=null;                       // дошёл — сменить позицию
+    m.wanderWait=0.7+Math.random()*1.3;
+  }
+  if (!m.guardCell){
+    const cells=bossGuardCells(pr), reach=[];
+    for (const c of cells){
+      if (m.room.x===c.x&&m.room.y===c.y){ reach.push(c); continue; }
+      if (bossNextDir(m,c)!==null) reach.push(c);
+    }
+    if (reach.length){
+      const alt=reach.filter(c=>!(c.x===m.room.x&&c.y===m.room.y));
+      const pool=alt.length?alt:reach;
+      const pick=pool[Math.floor(Math.random()*pool.length)];
+      m.guardCell={x:pick.x,y:pick.y};
+    } else {
+      bossPace(m,dt,cfg.patrolSpeed);       // встать негде — топчется рядом
+      return;
+    }
+  }
+  const gc=m.guardCell;
+  if (m.room.x===gc.x&&m.room.y===gc.y){ bossPace(m,dt,cfg.patrolSpeed); return; }
+  const d=bossNextDir(m,gc);
+  if (!d){ m.guardCell=null; return; }
+  if (!bossStartCross(m,d)) bossPace(m,dt,cfg.patrolSpeed);
+}
+
+function updateBossMonster(m,dt){
+  const cfg=m.cfg;
+  if (m.alert>0) m.alert-=dt;
+  if (m.blockedWait>0) m.blockedWait-=dt;
+  if (m.stun>0){ m.stun-=dt; m.moving=0; return; }
+  if (gameOver||gameWon){ m.moving=0; return; }
+
+  const pr=playerRoomForAI();
+  const sees=(Math.max(Math.abs(m.room.x-pr.x),Math.abs(m.room.y-pr.y))<=bossSenseRange());
+  const playerInTrap=MAP.traps.has(`${pr.x},${pr.y}`);
+  const playerHere=(pr.x===m.room.x&&pr.y===m.room.y);
+  const atHome=(m.room.x===m.home.x&&m.room.y===m.home.y);
+
+  // ---------- аграция / состояния ----------
+  if (m.state==='chase'){
+    // Погоня БЕСКОНЕЧНА (сброс только телепортом игрока или смертью Босса).
+    if (playerInTrap){ m.state='guard'; m.reason='караулит аномалию'; m.alert=0; m.guardCell=null; }
+    else if (playerHere){ /* догнать ниже */ }
+    else {
+      m.chkT-=dt;                            // «нюх»: цель = текущая комната игрока
+      if (m.chkT<=0){ m.chkT=0.7; m.targetRoom={x:pr.x,y:pr.y}; }
+    }
+  } else if (m.state==='guard'){
+    if (!playerInTrap){
+      if (sees||playerHere) setChase(m,{x:pr.x,y:pr.y},'вышел из укрытия','!');
+      else { m.state='return'; m.reason='потерял след'; m.alert=0; m.guardCell=null; }
+    } else if (!playerHere){
+      const know=Math.max(Math.abs(m.room.x-pr.x),Math.abs(m.room.y-pr.y))<=MONSTER_ACTIVE_RANGE;
+      if (!know){ m.state='return'; m.reason='домой'; m.alert=0; m.guardCell=null; }
+    }
+  } else {   // idle / return
+    if (sees||playerHere){
+      if (playerInTrap&&!playerHere){ m.state='guard'; m.reason='караулит аномалию'; m.alert=0; m.guardCell=null; }
+      else setChase(m,{x:pr.x,y:pr.y},'заметил','!');
+    } else if (!atHome){
+      m.state='return'; m.reason='домой';
+    }
+  }
+  if (m.state==='return'&&atHome){ m.state='idle'; m.reason='страж'; }
+
+  // ---------- покой: прохаживается по 2–3 комнатам вокруг спавна ----------
+  if (m.state==='idle'){
+    if (m.wanderWait>0){ m.wanderWait-=dt; m.moving=0; return; }
+    if (!m.patrolRoom){
+      const c=bossPatrolSpot(m);
+      if (!c){ bossPace(m,dt,cfg.patrolSpeed); return; }
+      m.patrolRoom={x:c.x,y:c.y}; m.ignoreDoorKey=null;
+    }
+    if (m.room.x===m.patrolRoom.x&&m.room.y===m.patrolRoom.y){
+      m.patrolRoom=null; m.wanderTarget=null;
+      m.wanderWait=1.0+Math.random()*2.0;    // постоит-оглядится
+      return;
+    }
+    const pd=bossNextDir(m,m.patrolRoom);
+    if (!pd){ m.patrolRoom=null; return; }
+    if (!bossStartCross(m,pd)) bossPace(m,dt,cfg.patrolSpeed);
+    return;
+  }
+
+  // ---------- переход через дверь ----------
+  if (m.cross){ bossStepCross(m,dt); return; }
+
+  // ---------- игрок в одной комнате: хватать ----------
+  if (playerHere&&!playerInTrap){
+    if (m.state!=='chase') setChase(m,{x:pr.x,y:pr.y},'в комнате','!');
+    const p=playerWorld(), t=clampToRoom(p,m.room,14);
+    steerMove(m,t.x,t.y,cfg.chaseSpeed,dt,false);
+    if (!gameWon&&!gameOver&&Math.hypot(p.x-m.x,p.y-m.y)<cfg.catchRadius) onBossCatch(m);
+    return;
+  }
+
+  if (m.blockedWait>0){ bossPace(m,dt,cfg.patrolSpeed*0.6); return; }
+
+  // ---------- выбор шага ----------
+  if (m.state==='chase'){
+    const dir=bossNextDir(m,pr);
+    if (dir){ if (!bossStartCross(m,dir)) bossPace(m,dt,cfg.patrolSpeed); return; }
+    bossGuardStep(m,dt);                     // путь к игроку упёрся (аномалия и т.п.)
+    return;
+  }
+  if (m.state==='guard'){ bossGuardStep(m,dt); return; }
+  // return: идти домой (после телепорта и т.п.)
+  const dir=bossNextDir(m,m.home);
+  if (dir){ if (!bossStartCross(m,dir)) bossPace(m,dt,cfg.patrolSpeed); return; }
+  bossPace(m,dt,cfg.patrolSpeed);
+}
+function onBossCatch(m){
+  if (gameOver||gameWon) return;
+  if (m.cross) releaseDoor(m.cross.key,m);
+  m.cross=null;
+  m.state='idle'; m.reason=''; m.targetRoom=null;
+  m.wanderTarget=null; m.ignoreDoorKey=null; m.alert=0; m.moving=0;
+  if (TUNE.bossLethal){
+    gameOver=true; gameOverText='ПОЙМАН БОССОМ'; updateHud();
+    flashMessage('Надзиратель сомкнул хватку — это конец');
+  } else {
+    const loss=(m.starDamage!==undefined?m.starDamage:3);
+    if (inv.stars>0){
+      inv.stars=Math.max(0,inv.stars-loss); updateHud();
+      flashMessage(inv.stars>0
+        ? `Надзиратель смял вас: −${loss}. Осталось ${inv.stars}`
+        : 'Надзиратель разбил последнюю звезду!');
+    } else {
+      gameOver=true; gameOverText='ПОЙМАН БОССОМ'; updateHud();
+      flashMessage('У вас не осталось звёзд — Надзиратель добил вас');
+    }
+    m.stun=1.6;      // тяжело дышит после удара, но не уходит
+    m.state='chase'; // и продолжает преследовать
+  }
+}
+
+function onCatch(m){
+  caughtCount++; caughtEl.textContent=caughtCount;
+  if (m.cross) releaseDoor(m.cross.key,m);
+  m.cross=null;
+  m.state='idle'; m.reason=''; m.targetRoom=null;
+  m.wanderTarget=null; m.ignoreDoorKey=null; m.alert=0; m.moving=0;
+
+  const sate=(m.cfg.sateTime||TUNE.sateTime);
+  if (TUNE.stayAfterCatch){
+    // монстр насытился и засыпает на месте (Охотник — лишь на 10 с, Ползун — 30 с)
+    m.sated=sate;
+  } else {
+    // старое поведение v10: телепорт домой
+    m.room={x:m.home.x,y:m.home.y};
+    m.x=roomCX(m.home.x)+40; m.y=roomCY(m.home.y);
+    m.stun=2.0;
+  }
+
+  const starLoss=(m.starDamage!==undefined?m.starDamage:(m.cfg.starDamage||1));
+  const who=m.cfg.title;
+  if (inv.stars>0){
+    const loss=Math.min(inv.stars,starLoss);
+    inv.stars-=loss;
+    updateHud();
+    flashMessage(inv.stars>0
+      ? `${who} сбил звёзды: −${loss}. Осталось ${inv.stars}`
+      : `${who} разбил последнюю звезду (−${loss})!`);
+  } else {
+    gameOver=true; gameOverText='ВАС СЪЕЛИ'; updateHud();
+    flashMessage(`Вас съел ${who.toLowerCase()}`);
+  }
+}
+
+// ============================================================
+// 11. ТЕКСТУРЫ
+// ============================================================
+const patternCache=new Map();
+function getRoomPattern(rx,ry){
+  const key=`${rx},${ry}`;
+  const hit=patternCache.get(key);
+  if (hit){ patternCache.delete(key); patternCache.set(key,hit); return hit; }
+
+  const off=document.createElement('canvas');
+  off.width=ROOM_SIZE; off.height=ROOM_SIZE;
+  const c=off.getContext('2d');
+  const rng=mulberry32(((rx*374761393+ry*668265263+WORLD_SEED)^0x5bd1e995)|0);
+  const r=()=>rng();
+  c.strokeStyle='rgba(0,0,0,0.15)'; c.lineWidth=1;
+  const S=ROOM_SIZE, texType=Math.floor(r()*10), step=18+Math.floor(r()*32);
+  const line=(a,b,d,e)=>{c.beginPath();c.moveTo(a,b);c.lineTo(d,e);c.stroke();};
+  const par=(ang,st)=>{
+    const dx=Math.cos(ang),dy=Math.sin(ang),nx=-dy,ny=dx,mD=S*1.2,L=S*1.5;
+    for(let d=-mD;d<mD;d+=st){
+      const px=S/2+nx*d,py=S/2+ny*d;
+      line(px-dx*L,py-dy*L,px+dx*L,py+dy*L);
+    }
+  };
+  if (texType===0){ for(let i=step;i<S;i+=step){line(i,0,i,S);line(0,i,S,i);} }
+  else if (texType===1){ par(0.3+r()*1.0,step); }
+  else if (texType===2){ const a=0.3+r()*0.6; par(a,step); par(a+Math.PI/2,step); }
+  else if (texType===3){
+    const bh=14+Math.floor(r()*16), bw=28+Math.floor(r()*34);
+    for(let row=0;row*bh<S;row++){
+      const y=row*bh; line(0,y,S,y);
+      const o=(row%2)*(bw/2);
+      for(let x=o;x<S;x+=bw) line(x,y,x,y+bh);
+    }
+  }
+  else if (texType===4){
+    const rs=14+Math.floor(r()*24);
+    for(let rad=rs;rad<S*0.85;rad+=rs){c.beginPath();c.arc(S/2,S/2,rad,0,TAU);c.stroke();}
+  }
+  else if (texType===5){
+    const sl=14+Math.floor(r()*14);
+    for(let row=-2;row*sl<S+sl*2;row++) for(let col=-2;col*sl<S+sl*2;col++){
+      const bx=col*sl,by=row*sl;
+      if((row+col)%2===0) line(bx,by,bx+sl,by+sl); else line(bx+sl,by,bx,by+sl);
+    }
+  }
+  else if (texType===6){
+    const hr=13+Math.floor(r()*16), hh=hr*Math.sqrt(3), hw=hr*2;
+    for(let row=-1;row*hh*0.5<S+hh;row++) for(let col=-1;col*hw*0.75<S+hw;col++){
+      const ccx=col*hw*0.75+((row%2)?hw*0.375:0), ccy=row*hh*0.5;
+      c.beginPath();
+      for(let i=0;i<6;i++){
+        const a=(i/6)*TAU-Math.PI/6;
+        const x=ccx+Math.cos(a)*hr,y=ccy+Math.sin(a)*hr;
+        if(i===0)c.moveTo(x,y); else c.lineTo(x,y);
+      }
+      c.closePath(); c.stroke();
+    }
+  }
+  else if (texType===7){
+    const amp=4+r()*10, fr=0.015+r()*0.04, ph=r()*TAU, ws=16+Math.floor(r()*26);
+    for(let y=ws;y<S;y+=ws){
+      c.beginPath();
+      for(let x=0;x<=S;x+=3){
+        const wy=y+Math.sin(x*fr+ph)*amp;
+        if(x===0)c.moveTo(x,wy); else c.lineTo(x,wy);
+      }
+      c.stroke();
+    }
+  }
+  else if (texType===8){ par(0.4+r()*0.4,20+Math.floor(r()*20)); par(-(0.4+r()*0.4),20+Math.floor(r()*20)); }
+  else {
+    const tw=20+Math.floor(r()*20), th=16+Math.floor(r()*16);
+    for(let row=-1;row*th<S+th;row++){
+      const o=(row%2)*(tw/2);
+      for(let col=-1;col*tw<S+tw;col++){
+        c.beginPath(); c.arc(col*tw+o+tw/2,row*th+th,tw/2,Math.PI,TAU); c.stroke();
+      }
+    }
+  }
+  patternCache.set(key,off);
+  if (patternCache.size>PATTERN_CACHE_MAX) patternCache.delete(patternCache.keys().next().value);
+  return off;
+}
+
+function roomColor(x,y){
+  const n=((x*73856093)^(y*19349663)^WORLD_SEED);
+  const hue=((n%360)+360)%360;
+  const z=zoneAt(x,y);
+  return `hsl(${hue}, ${34-z*4}%, ${47-z*4.5}%)`;
+}
+
+// ============================================================
+// 12. РЕНДЕР ПОЛЯ
+// ============================================================
+const canvas=document.getElementById('game');
+const ctx=canvas.getContext('2d');
+const posEl=document.getElementById('pos');
+const zoneEl=document.getElementById('zone');
+const exploredEl=document.getElementById('explored');
+const caughtEl=document.getElementById('caught');
+const msgEl=document.getElementById('msg');
+const chipStars=document.getElementById('chipStars');
+const chipCoins=document.getElementById('chipCoins');
+const chipGren=document.getElementById('chipGren');
+const chipTele=document.getElementById('chipTele');
+const chipApple=document.getElementById('chipApple');
+
+function updateHud(){
+  chipStars.innerHTML = inv.stars>0 ? `★ <b>${inv.stars}</b>` : `✕ <b>0</b>`;
+  chipStars.classList.toggle('empty', inv.stars===0);
+  chipCoins.innerHTML = `₥ <b>${inv.coins}</b>`;
+  chipGren.innerHTML  = `✹ <b>${inv.grenades}</b>`;
+  chipGren.classList.toggle('off', inv.grenades===0);
+  chipTele.innerHTML  = `⌖ <b>${inv.teleports}</b>`;
+  chipTele.classList.toggle('off', inv.teleports===0);
+  chipApple.innerHTML = `◉ <b>${inv.apples}</b>`;
+  chipApple.classList.toggle('off', inv.apples===0);
+  chipApple.title = inv.apples>0
+    ? 'Яблоко-приманка: E или клик — оставить в этой комнате'
+    : 'Яблоки лежат на карте (◉) и продаются не везде: подберите и оставляйте (E)';
+  for (let i=0;i<3;i++){
+    const el=document.getElementById('k'+i);
+    const has=inv.keys[i];
+    el.classList.toggle('has',has);
+    el.style.background = has ? KEY_DEFS[i].color : '#1a1d23';
+    el.style.color = KEY_DEFS[i].color;
+    el.title = KEY_DEFS[i].name + ' ключ';
+  }
+  refreshShop();
+}
+
+function alphaForWorld(wx,wy){
+  const d=Math.hypot((wx-camX)/ROOM_SIZE,(wy-camY)/ROOM_SIZE);
+  return clamp(1-0.22*d,0.42,1);
+}
+
+function render(time){
+  ctx.fillStyle='#000';
+  ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE);
+
+  const visible=[], half=ROOM_SIZE/2;
+  for (let ry=player.y-3;ry<=player.y+3;ry++)
+    for (let rx=player.x-3;rx<=player.x+3;rx++){
+      if (!inBounds(rx,ry)) continue;
+      const cx=roomCX(rx),cy=roomCY(ry);
+      const l=sx(cx-half),t=sy(cy-half);
+      if (l>CANVAS_SIZE||t>CANVAS_SIZE||l+ROOM_SIZE<0||t+ROOM_SIZE<0) continue;
+      visible.push({rx,ry,cx,cy,l,t,alpha:alphaForWorld(cx,cy)});
+    }
+
+  for (const r of visible){
+    ctx.save(); ctx.globalAlpha=r.alpha;
+    ctx.fillStyle=roomColor(r.rx,r.ry);
+    ctx.fillRect(r.l,r.t,ROOM_SIZE,ROOM_SIZE);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(r.l,r.t,ROOM_SIZE,ROOM_SIZE); ctx.clip();
+    ctx.drawImage(getRoomPattern(r.rx,r.ry),r.l,r.t);
+    ctx.restore(); ctx.restore();
+    if (MAP.shops.has(`${r.rx},${r.ry}`)) drawShopFloor(r,time);
+    if (MAP.traps.has(`${r.rx},${r.ry}`)) drawTrapFloor(r,time);
+    if (r.rx===MAP.exit.x&&r.ry===MAP.exit.y) drawExitGate(r,time);
+  }
+
+  // предметы
+  for (const r of visible){
+    const it=MAP.items.get(`${r.rx},${r.ry}`);
+    if (!it) continue;
+    const X=sx(r.cx), Y=sy(r.cy);
+    if      (it.type==='star')    drawStar(X,Y,ITEM_R,r.alpha,time);
+    else if (it.type==='coin')    drawMoney(X,Y,r.alpha,time,it.value);
+    else if (it.type==='grenade') drawGrenadeIcon(X,Y,r.alpha,time);
+    else if (it.type==='apple')   drawAppleItem(X+(it.ox||0),Y+(it.oy||0),r.alpha,time);
+    else if (it.type==='key')     drawKeyItem(X,Y,r.alpha,time,it.color);
+  }
+
+  for (const r of visible) drawRoomWalls(r);
+
+  const keys=new Set();
+  for (const r of visible) for (const side of DIRS)
+    if (sideType(r.rx,r.ry,side)!=='wall') keys.add(doorKey(r.rx,r.ry,side));
+  for (const k of keys) drawDoorLeaf(k,time);
+
+  // брошенные гранаты
+  for (const g of grenades){
+    const X=sx(g.x), Y=sy(g.y);
+    const blink=Math.sin((GRENADE_FUSE-g.t)*22)>0;
+    ctx.save();
+    ctx.globalAlpha=alphaForWorld(g.x,g.y);
+    ctx.fillStyle='#2b2f36';
+    ctx.beginPath(); ctx.arc(X,Y,10,0,TAU); ctx.fill();
+    ctx.strokeStyle='#585f6a'; ctx.lineWidth=2; ctx.stroke();
+    ctx.fillStyle=blink?'#ff5a3c':'#7a4a30';
+    ctx.beginPath(); ctx.arc(X+6,Y-8,3.5,0,TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  for (const m of monsters){
+    if (Math.max(Math.abs(m.room.x-player.x),Math.abs(m.room.y-player.y))>3) continue;
+    drawMonster(m,time);
+  }
+
+  // разряды аномалии
+  for (let i=zaps.length-1;i>=0;i--){
+    const z=zaps[i]; z.t+=1/60;
+    if (z.t>0.6){ zaps.splice(i,1); continue; }
+    const p=z.t/0.6, X=sx(z.x), Y=sy(z.y);
+    ctx.save();
+    ctx.globalAlpha=(1-p);
+    ctx.strokeStyle='#aee9ff'; ctx.lineWidth=2.5*(1-p)+0.5;
+    ctx.beginPath(); ctx.arc(X,Y,10+p*70,0,TAU); ctx.stroke();
+    ctx.strokeStyle='#5ab8ff';
+    ctx.beginPath(); ctx.arc(X,Y,4+p*40,0,TAU); ctx.stroke();
+    const rr=mulberry32((Math.floor(z.t*30)+1)*7919);
+    ctx.strokeStyle=`rgba(200,240,255,${1-p})`; ctx.lineWidth=1.5;
+    for (let k=0;k<3;k++){
+      const a=rr()*TAU, l1=8+rr()*20, l2=l1+10+rr()*25;
+      ctx.beginPath();
+      ctx.moveTo(X+Math.cos(a)*l1, Y+Math.sin(a)*l1);
+      ctx.lineTo(X+Math.cos(a+0.3)*l2, Y+Math.sin(a+0.3)*l2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // взрывы
+  for (const e of explosions){
+    const p=e.t/0.85, X=sx(e.x), Y=sy(e.y);
+    const R=GRENADE_RADIUS*(0.25+0.75*p);
+    ctx.save();
+    ctx.globalAlpha=(1-p)*0.9;
+    const g=ctx.createRadialGradient(X,Y,R*0.1,X,Y,R);
+    g.addColorStop(0,'rgba(255,255,220,0.95)');
+    g.addColorStop(0.35,'rgba(255,170,40,0.75)');
+    g.addColorStop(0.7,'rgba(220,70,25,0.4)');
+    g.addColorStop(1,'rgba(70,20,10,0)');
+    ctx.fillStyle=g;
+    ctx.beginPath(); ctx.arc(X,Y,R,0,TAU); ctx.fill();
+    ctx.strokeStyle=`rgba(255,230,160,${(1-p)*0.8})`;
+    ctx.lineWidth=3*(1-p)+1;
+    ctx.beginPath(); ctx.arc(X,Y,R*0.95,0,TAU); ctx.stroke();
+    ctx.restore();
+  }
+
+  drawFog();
+
+  // вспышка телепорта
+  if (teleFx){
+    teleFx.t+=1/60;
+    const p=teleFx.t/0.7;
+    if (p>=1) teleFx=null;
+    else {
+      ctx.save();
+      ctx.globalAlpha=1-p;
+      ctx.strokeStyle='#7ac4f5'; ctx.lineWidth=3*(1-p)+1;
+      ctx.beginPath(); ctx.arc(CANVAS_SIZE/2,CANVAS_SIZE/2,14+p*120,0,TAU); ctx.stroke();
+      ctx.beginPath(); ctx.arc(CANVAS_SIZE/2,CANVAS_SIZE/2,8+p*70,0,TAU); ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // игрок
+  ctx.fillStyle= inv.stars>0 ? '#fff' : '#ff9a9a';
+  ctx.shadowColor= inv.stars>0 ? 'rgba(255,255,255,0.7)' : 'rgba(255,90,90,0.8)';
+  ctx.shadowBlur=10;
+  ctx.beginPath(); ctx.arc(CANVAS_SIZE/2,CANVAS_SIZE/2,6,0,TAU); ctx.fill();
+  ctx.shadowBlur=0;
+  if (inv.stars>0){
+    ctx.strokeStyle=`rgba(255,212,81,${0.32+0.18*Math.sin(time*2.5)})`;
+    ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(CANVAS_SIZE/2,CANVAS_SIZE/2,13,0,TAU); ctx.stroke();
+  }
+
+  if (unlocking) drawUnlockAnim(time);
+  if (DEBUG) drawDebug();
+  if (gameWon)  drawOverlay('ВЫХОД НАЙДЕН','#8ef08e');
+  if (gameOver) drawOverlay(gameOverText,'#ff7a7a');
+}
+
+function drawStar(cx,cy,R,alpha,time){
+  const rot=time*0.5, pulse=0.85+0.15*Math.sin(time*3);
+  ctx.save(); ctx.globalAlpha=alpha;
+  const g=ctx.createRadialGradient(cx,cy,2,cx,cy,R*2.6);
+  g.addColorStop(0,`rgba(255,220,110,${0.45*pulse})`);
+  g.addColorStop(1,'rgba(255,200,60,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,R*2.6,0,TAU); ctx.fill();
+  ctx.translate(cx,cy); ctx.rotate(rot);
+  ctx.beginPath();
+  for (let i=0;i<10;i++){
+    const a=(i/10)*TAU-Math.PI/2, rr=(i%2===0)?R:R*0.44;
+    const x=Math.cos(a)*rr, y=Math.sin(a)*rr;
+    if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.closePath();
+  ctx.fillStyle='#ffd451'; ctx.fill();
+  ctx.strokeStyle='#a8761a'; ctx.lineWidth=1.5; ctx.stroke();
+  ctx.restore();
+}
+
+function drawMoney(cx,cy,alpha,time,value){
+  const bob=Math.sin(time*2.2)*1.5;
+  ctx.save(); ctx.globalAlpha=alpha;
+  ctx.translate(cx,cy+bob);
+  const g=ctx.createRadialGradient(0,0,2,0,0,30);
+  g.addColorStop(0,'rgba(95,201,138,0.35)');
+  g.addColorStop(1,'rgba(95,201,138,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(0,0,30,0,TAU); ctx.fill();
+  // пачка купюр
+  for (let i=2;i>=0;i--){
+    ctx.save();
+    ctx.translate(i*1.6-1.6, i*1.6-1.6);
+    ctx.rotate((i-1)*0.06);
+    ctx.fillStyle= i===0 ? '#57b57c' : '#3f8e60';
+    ctx.fillRect(-15,-9,30,18);
+    ctx.strokeStyle='#28603f'; ctx.lineWidth=1; ctx.strokeRect(-15,-9,30,18);
+    ctx.restore();
+  }
+  ctx.fillStyle='#d8f5e4'; ctx.font='bold 12px sans-serif';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('₥', 0, 0);
+  if (value>=4){
+    ctx.fillStyle='#bfe9cf'; ctx.font='bold 9px sans-serif';
+    ctx.fillText('×'+value, 0, 15);
+  }
+  ctx.restore();
+}
+
+function drawAppleItem(cx,cy,alpha,time){
+  const bob=Math.sin(time*2.6)*1.5;
+  ctx.save(); ctx.globalAlpha=alpha;
+  ctx.translate(cx,cy+bob);
+  const g=ctx.createRadialGradient(0,0,2,0,0,26);
+  g.addColorStop(0,'rgba(255,120,95,0.3)');
+  g.addColorStop(1,'rgba(255,120,95,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(0,0,26,0,TAU); ctx.fill();
+  // яблоко
+  ctx.fillStyle='rgba(0,0,0,0.3)';
+  ctx.beginPath(); ctx.ellipse(1,6,10,3,0,0,TAU); ctx.fill();
+  ctx.fillStyle='#ff5a42';
+  ctx.beginPath(); ctx.ellipse(-2,1,8.5,10,0.4,0,TAU); ctx.fill();
+  ctx.fillStyle='#ff8570';
+  ctx.beginPath(); ctx.ellipse(2,-2,4,3.2,0.3,0,TAU); ctx.fill();
+  // хвостик и лист
+  ctx.strokeStyle='#6b4423'; ctx.lineWidth=2; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(-1,-8); ctx.quadraticCurveTo(1,-12,5,-11); ctx.stroke();
+  ctx.fillStyle='#6fbf4d';
+  ctx.beginPath(); ctx.ellipse(6,-10,5,2.4,-0.5,0,TAU); ctx.fill();
+  ctx.restore();
+}
+
+function drawGrenadeIcon(cx,cy,alpha,time){
+  ctx.save(); ctx.globalAlpha=alpha;
+  ctx.translate(cx,cy+Math.sin(time*2)*1.2);
+  ctx.fillStyle='rgba(0,0,0,0.35)';
+  ctx.beginPath(); ctx.ellipse(2,10,11,4,0,0,TAU); ctx.fill();
+  ctx.fillStyle='#33383f';
+  ctx.beginPath(); ctx.arc(0,0,11,0,TAU); ctx.fill();
+  ctx.strokeStyle='#5c636d'; ctx.lineWidth=1.5;
+  for (let i=-1;i<=1;i++){
+    ctx.beginPath(); ctx.moveTo(-9,i*6); ctx.lineTo(9,i*6); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(i*6,-9); ctx.lineTo(i*6,9); ctx.stroke();
+  }
+  ctx.fillStyle='#6b6f78'; ctx.fillRect(-3,-15,6,5);
+  ctx.strokeStyle='#8a909a'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(6,-14,4,Math.PI*0.6,Math.PI*2); ctx.stroke();
+  ctx.restore();
+}
+
+function drawKeyItem(cx,cy,alpha,time,colorId){
+  const kd=KEY_DEFS[colorId];
+  const rot=Math.sin(time*1.5)*0.25;
+  ctx.save(); ctx.globalAlpha=alpha;
+  const g=ctx.createRadialGradient(cx,cy,2,cx,cy,34);
+  g.addColorStop(0,kd.color+'66');
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,34,0,TAU); ctx.fill();
+  ctx.translate(cx,cy); ctx.rotate(rot);
+  ctx.strokeStyle=kd.color; ctx.fillStyle=kd.color;
+  ctx.lineWidth=3.5; ctx.lineCap='round';
+  ctx.beginPath(); ctx.arc(-6,0,6,0,TAU); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(14,0); ctx.stroke();
+  ctx.fillRect(9,-1,2.5,7);
+  ctx.fillRect(13,-1,2.5,5);
+  ctx.restore();
+}
+
+function drawTrapFloor(r,time){
+  const cx=r.l+ROOM_SIZE/2, cy=r.t+ROOM_SIZE/2;
+  const pulse=0.6+0.4*Math.sin(time*2.3);
+  ctx.save(); ctx.globalAlpha=r.alpha;
+  // свечение
+  const g=ctx.createRadialGradient(cx,cy,8,cx,cy,ROOM_SIZE*0.42);
+  g.addColorStop(0,`rgba(120,220,255,${0.16*pulse})`);
+  g.addColorStop(0.6,`rgba(90,140,255,${0.08*pulse})`);
+  g.addColorStop(1,'rgba(90,140,255,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,ROOM_SIZE*0.42,0,TAU); ctx.fill();
+  // вращающиеся кольца
+  for (const [rad,sp,da] of [[ROOM_SIZE*0.34,0.7,0.5],[ROOM_SIZE*0.24,-1.1,0.35]]){
+    ctx.strokeStyle=`rgba(122,224,255,${da*pulse})`;
+    ctx.lineWidth=2; ctx.setLineDash([6,14]);
+    ctx.lineDashOffset=-time*sp*40;
+    ctx.beginPath(); ctx.arc(cx,cy,rad,0,TAU); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  // дуги-молнии из центра (псевдослучайные, дрожат)
+  const seed=Math.floor(time*9);
+  const rr=mulberry32(seed*2654435761|0);
+  ctx.strokeStyle=`rgba(170,235,255,${0.55*pulse})`;
+  ctx.lineWidth=1.6; ctx.lineCap='round';
+  for (let i=0;i<4;i++){
+    const a0=rr()*TAU;
+    let px0=cx, py0=cy, a=a0;
+    ctx.beginPath(); ctx.moveTo(px0,py0);
+    for (let s=0;s<4;s++){
+      a+=(rr()-0.5)*1.2;
+      const len=ROOM_SIZE*(0.05+rr()*0.07);
+      px0+=Math.cos(a)*len; py0+=Math.sin(a)*len;
+      ctx.lineTo(px0,py0);
+    }
+    ctx.stroke();
+  }
+  // ядро
+  ctx.fillStyle=`rgba(200,245,255,${0.5+0.4*pulse})`;
+  ctx.beginPath(); ctx.arc(cx,cy,5+2*pulse,0,TAU); ctx.fill();
+  ctx.fillStyle='rgba(150,225,255,0.85)';
+  ctx.font='bold 13px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('АНОМАЛИЯ', cx, cy-ROOM_SIZE*0.24+14);
+  ctx.font='10px sans-serif';
+  ctx.fillStyle='rgba(150,225,255,0.55)';
+  ctx.fillText('безопасно для вас · бьёт монстров', cx, cy+ROOM_SIZE*0.24);
+  ctx.restore();
+}
+
+// Витрина: товары стоят вдоль «прилавка» в комнате магазина.
+// Иконки — в ряд у нижней стены; клик по товару (или клавиши 1–6) — покупка.
+const SHOW_XS=[-105,-63,-21,21,63,105];   // смещение иконки от центра комнаты, по X
+const SHOW_Y =92;                         // по Y (вниз)
+const SHOW_HIT=28;                        // радиус «кликабельности» товара
+
+function shopGoods(){
+  return [
+    {id:'star',     name:'Звезда защиты',      price:PRICES.star,     sold:false},
+    {id:'grenade',  name:'Граната',            price:PRICES.grenade,  sold:false},
+    {id:'apple',    name:'Яблоко-приманка',    price:PRICES.apple,    sold:false},
+    {id:'teleport', name:'Свиток телепорта (T)',price:PRICES.teleport, sold:false},
+    {id:'hintExit', name:'Подсказка: выход',   price:PRICES.hintExit, sold:hintExit},
+    {id:'hintPath', name:'Подсказка: путь',    price:PRICES.hintPath, sold:hintPath},
+  ];
+}
+
+function drawScrollIcon(cx,cy,R,alpha,time){
+  const bob=Math.sin(time*2)*1.2;
+  ctx.save(); ctx.globalAlpha=alpha;
+  ctx.translate(cx,cy+bob);
+  ctx.fillStyle='rgba(0,0,0,0.3)';
+  ctx.beginPath(); ctx.ellipse(0,R*0.95,R*1.05,R*0.35,0,0,TAU); ctx.fill();
+  // бумага
+  ctx.fillStyle='#e8d9a8';
+  ctx.beginPath();
+  ctx.moveTo(-R,-R*0.8);
+  ctx.quadraticCurveTo(R*0.1,-R*1.25,R,-R*0.8);
+  ctx.lineTo(R*0.85,R*0.2);
+  ctx.quadraticCurveTo(0,R*0.85,-R*0.85,R*0.2);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle='#a98e4e'; ctx.lineWidth=1.2;
+  ctx.stroke();
+  // валики
+  ctx.fillStyle='#c9ac66';
+  ctx.fillRect(-R*1.25,-R*0.95,R*0.45,R*1.15);
+  ctx.fillRect(R*0.8,-R*0.95,R*0.45,R*1.15);
+  ctx.fillStyle='#7ac4f5'; ctx.font='bold 11px sans-serif';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('⌖',0,R*0.1);
+  ctx.restore();
+}
+
+function drawShowcaseIcon(id,X,Y,alpha,time){
+  if (id==='star')     drawStar(X,Y,17,alpha,time);
+  else if (id==='grenade') drawGrenadeIcon(X,Y,alpha,time);
+  else if (id==='apple')   drawAppleItem(X,Y-2,alpha,time);
+  else if (id==='teleport') drawScrollIcon(X,Y,17,alpha,time);
+  else if (id==='hintExit'||id==='hintPath'){
+    ctx.save(); ctx.globalAlpha=alpha;
+    ctx.fillStyle=id==='hintExit'?'#ffb454':'#8ef08e';
+    ctx.font='bold 26px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(id==='hintExit'?'⚑':'⇢',X,Y);
+    ctx.restore();
+  }
+}
+
+function drawShopFloor(r,time){
+  const cx=r.l+ROOM_SIZE/2, cy=r.t+ROOM_SIZE/2;
+  const pulse=0.6+0.4*Math.sin(time*2);
+  const inMyShop=(r.rx===player.x&&r.ry===player.y);
+  ctx.save(); ctx.globalAlpha=r.alpha;
+  ctx.strokeStyle=`rgba(223,230,238,${0.28*pulse})`;
+  ctx.lineWidth=2; ctx.setLineDash([9,7]);
+  ctx.beginPath(); ctx.arc(cx,cy,ROOM_SIZE*0.34,0,TAU); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle=`rgba(223,230,238,${0.75})`;
+  ctx.font='bold 13px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  ctx.fillText('МАГАЗИН', cx, cy-ROOM_SIZE*0.26);
+  // навес
+  ctx.translate(cx,cy+ROOM_SIZE*0.02);
+  for (let i=-2;i<=2;i++){
+    ctx.fillStyle = (i%2===0)?'#c8ccd4':'#8d3a3a';
+    ctx.fillRect(i*13-6.5,-8,13,16);
+  }
+  ctx.strokeStyle='#5b6069'; ctx.lineWidth=1.5;
+  ctx.strokeRect(-32.5,-8,65,16);
+  ctx.restore();
+
+  // --- витрина (рисуется, когда игрок ВНУТРИ этого магазина) ---
+  if (inMyShop){
+    const goods=shopGoods();
+    ctx.save(); ctx.globalAlpha=r.alpha;
+    // деревянный прилавок (полка вдоль нижней стены)
+    ctx.fillStyle='rgba(116,80,44,0.95)';
+    ctx.fillRect(cx-122, cy+112, 244, 6);
+    ctx.fillStyle='rgba(80,52,26,0.95)';
+    ctx.fillRect(cx-122, cy+118, 244, 3);
+    ctx.restore();
+
+    // подсказка
+    ctx.save(); ctx.globalAlpha=r.alpha*(0.55+0.25*Math.sin(time*2));
+    ctx.fillStyle='#c8d6e2';
+    ctx.font='10px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('Витрина — клик по товару или клавиши 1–6', cx, cy-ROOM_SIZE*0.15);
+    ctx.restore();
+
+    for (let i=0;i<goods.length;i++){
+      const X=cx+SHOW_XS[i], Y=cy+SHOW_Y;
+      const g=goods[i];
+      const affordable=inv.coins>=g.price;
+      const hovered=(shopHover===i&&!g.sold);
+      const dim=(g.sold||!affordable)&&!hovered;
+      const eff=r.alpha*(dim?0.45:1);
+      ctx.save();
+      ctx.globalAlpha=eff;
+
+      // плинт-подставка
+      ctx.fillStyle='rgba(40,44,52,0.9)';
+      ctx.beginPath(); ctx.ellipse(X,Y+18,20,7,0,0,TAU); ctx.fill();
+      ctx.fillStyle='rgba(90,72,48,1)';
+      ctx.beginPath(); ctx.ellipse(X,Y+16,16,5,0,0,TAU); ctx.fill();
+
+      if (hovered){   // подсветка выбранного товара
+        const gg=ctx.createRadialGradient(X,Y,4,X,Y,42);
+        gg.addColorStop(0,'rgba(255,255,255,0.28)');
+        gg.addColorStop(1,'rgba(255,255,255,0)');
+        ctx.fillStyle=gg; ctx.beginPath(); ctx.arc(X,Y,42,0,TAU); ctx.fill();
+        ctx.strokeStyle='rgba(255,255,255,0.8)'; ctx.lineWidth=2;
+        ctx.beginPath(); ctx.arc(X,Y,21,0,TAU); ctx.stroke();
+      }
+
+      drawShowcaseIcon(g.id,X,Y-6,eff,time);
+      ctx.restore();
+
+      // номер клавиши и ценник
+      ctx.save(); ctx.globalAlpha=r.alpha*(g.sold?0.5:1);
+      ctx.fillStyle='rgba(10,12,16,0.78)';
+      const pw=g.sold?58:46, ph=15;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(X-pw/2,Y+18,pw,ph,4);
+      else ctx.rect(X-pw/2,Y+18,pw,ph);
+      ctx.fill();
+      ctx.font='bold 10px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillStyle=g.sold?'#9aa1ab':'#5fc98a';
+      ctx.fillText(g.sold?'продано':(affordable?`${i+1} · ${g.price}₥`:`${i+1} · —`),X,Y+25.5);
+      ctx.restore();
+    }
+  }
+}
+
+function drawExitGate(r,time){
+  const d=MAP.exitDir, pulse=0.55+0.45*Math.sin(time*3);
+  const cx=r.l+ROOM_SIZE/2, cy=r.t+ROOM_SIZE/2;
+  let gx=cx,gy=cy;
+  if (d==='N') gy=r.t; else if (d==='S') gy=r.t+ROOM_SIZE;
+  else if (d==='W') gx=r.l; else gx=r.l+ROOM_SIZE;
+  ctx.save();
+  const g=ctx.createRadialGradient(gx,gy,4,gx,gy,ROOM_SIZE*0.7);
+  g.addColorStop(0,`rgba(140,255,140,${0.55*pulse})`);
+  g.addColorStop(0.5,`rgba(90,220,110,${0.18*pulse})`);
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(gx,gy,ROOM_SIZE*0.7,0,TAU); ctx.fill();
+  ctx.strokeStyle=`rgba(170,255,170,${0.8*pulse})`; ctx.lineWidth=7; ctx.lineCap='round';
+  ctx.beginPath();
+  if (d==='N'||d==='S'){ ctx.moveTo(gx-DOOR_WIDTH/2,gy); ctx.lineTo(gx+DOOR_WIDTH/2,gy); }
+  else { ctx.moveTo(gx,gy-DOOR_WIDTH/2); ctx.lineTo(gx,gy+DOOR_WIDTH/2); }
+  ctx.stroke();
+  ctx.fillStyle='rgba(190,255,190,0.9)'; ctx.font='bold 15px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('ВЫХОД',cx,cy+5);
+  ctx.restore();
+}
+
+function drawRoomWalls(r){
+  const x0=r.l,y0=r.t;
+  for (const side of DIRS){
+    const t=sideType(r.rx,r.ry,side);
+    let ax,ay,bx,by;
+    if (side==='N'){ax=x0;ay=y0;bx=x0+ROOM_SIZE;by=y0;}
+    if (side==='S'){ax=x0;ay=y0+ROOM_SIZE;bx=x0+ROOM_SIZE;by=y0+ROOM_SIZE;}
+    if (side==='E'){ax=x0+ROOM_SIZE;ay=y0;bx=x0+ROOM_SIZE;by=y0+ROOM_SIZE;}
+    if (side==='W'){ax=x0;ay=y0;bx=x0;by=y0+ROOM_SIZE;}
+    if (t==='wall'){ strokeLine(ax,ay,bx,by,WALL_COLOR,4,r.alpha); continue; }
+    const mx=(ax+bx)/2,my=(ay+by)/2,len=Math.hypot(bx-ax,by-ay);
+    const ux=(bx-ax)/len,uy=(by-ay)/len;
+    strokeLine(ax,ay,mx-ux*DOOR_WIDTH/2,my-uy*DOOR_WIDTH/2,WALL_COLOR,4,r.alpha);
+    strokeLine(mx+ux*DOOR_WIDTH/2,my+uy*DOOR_WIDTH/2,bx,by,WALL_COLOR,4,r.alpha);
+  }
+}
+
+function drawDoorLeaf(key,time){
+  const g=doorGeom(key), a=doorAnims.get(key), angle=a?a.angle:0;
+  const p1x=sx(g.p1x),p1y=sy(g.p1y),p2x=sx(g.p2x),p2y=sy(g.p2y);
+  const rad=angle*Math.PI/180, vx=p2x-p1x, vy=p2y-p1y;
+  const c=Math.cos(rad),s=Math.sin(rad);
+  const hx=p1x+vx*c-vy*s, hy=p1y+vx*s+vy*c;
+
+  const lock=lockColorOf(key);
+  const color = lock ? lock.color : DOOR_COLOR;
+
+  ctx.save();
+  ctx.globalAlpha=Math.max(alphaForWorld(g.mx,g.my),0.7);
+
+  if (lock){
+    const pulse=0.5+0.5*Math.sin(time*2.4);
+    ctx.shadowColor=lock.color;
+    ctx.shadowBlur=8+6*pulse;
+  }
+  ctx.strokeStyle=color; ctx.lineWidth=lock?8:7; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(p1x,p1y); ctx.lineTo(hx,hy); ctx.stroke();
+  ctx.shadowBlur=0;
+
+  if (lock){
+    // замочная скоба посередине створки
+    const mx2=(p1x+hx)/2, my2=(p1y+hy)/2;
+    ctx.fillStyle=lock.dark;
+    ctx.beginPath(); ctx.arc(mx2,my2,6.5,0,TAU); ctx.fill();
+    ctx.strokeStyle=lock.color; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(mx2,my2-4.5,3.6,Math.PI,TAU); ctx.stroke();
+    ctx.fillStyle=lock.color;
+    ctx.beginPath(); ctx.arc(mx2,my2+0.5,2,0,TAU); ctx.fill();
+  } else {
+    ctx.fillStyle=color; ctx.beginPath(); ctx.arc(hx,hy,4.5,0,TAU); ctx.fill();
+  }
+  ctx.fillStyle='#000'; ctx.beginPath(); ctx.arc(p1x,p1y,3,0,TAU); ctx.fill();
+  ctx.restore();
+}
+
+function drawUnlockAnim(time){
+  const p=clamp(unlocking.t/T_UNLOCK,0,1);
+  const kd=KEY_DEFS[unlocking.color];
+  const dc=doorCenter(player.x,player.y,unlocking.dir);
+  const X=sx(dc.x), Y=sy(dc.y);
+
+  ctx.save();
+  const R=26+10*Math.sin(p*Math.PI);
+  const g=ctx.createRadialGradient(X,Y,3,X,Y,R);
+  g.addColorStop(0,kd.color+'cc');
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(X,Y,R,0,TAU); ctx.fill();
+
+  ctx.translate(X,Y);
+  ctx.rotate(p*Math.PI*1.5);
+  ctx.strokeStyle='#fff'; ctx.fillStyle='#fff';
+  ctx.lineWidth=3.5; ctx.lineCap='round';
+  ctx.beginPath(); ctx.arc(-6,0,6,0,TAU); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(14,0); ctx.stroke();
+  ctx.fillRect(9,-1,2.5,7); ctx.fillRect(13,-1,2.5,5);
+  ctx.restore();
+
+  if (p>0.55){
+    const q=(p-0.55)/0.45;
+    ctx.save();
+    ctx.globalAlpha=1-q;
+    ctx.strokeStyle=kd.color; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.arc(X,Y,20+q*40,0,TAU); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function strokeLine(ax,ay,bx,by,color,w,alpha){
+  ctx.save(); ctx.globalAlpha=alpha;
+  ctx.strokeStyle=color; ctx.lineWidth=w;
+  ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(bx,by); ctx.stroke();
+  ctx.restore();
+}
+
+function drawFog(){
+  const c=CANVAS_SIZE/2;
+  const g=ctx.createRadialGradient(c,c,ROOM_SIZE*0.45,c,c,ROOM_SIZE*1.95);
+  g.addColorStop(0.00,'rgba(0,0,0,0)');
+  g.addColorStop(0.35,'rgba(0,0,0,0.28)');
+  g.addColorStop(0.65,'rgba(0,0,0,0.70)');
+  g.addColorStop(0.85,'rgba(0,0,0,0.90)');
+  g.addColorStop(1.00,'rgba(0,0,0,0.98)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE);
+}
+
+function drawMonster(m,time){
+  const px=sx(m.x),py=sy(m.y);
+  if (px<-60||py<-60||px>CANVAS_SIZE+60||py>CANVAS_SIZE+60) return;
+  const alpha=alphaForWorld(m.x,m.y);
+  m.cfg.draw(m,px,py,alpha,time);
+  const maxHp=m.maxHp||m.cfg.maxHp;
+  if (m.hp>0&&m.hp<maxHp){   // полоска здоровья у раненых (у Босса — крупная)
+    const w=m.cfg.boss?m.cfg.size*3.2:m.cfg.size*2.4, y=py-m.cfg.size*2.9;
+    ctx.save(); ctx.globalAlpha=alpha*0.95;
+    ctx.fillStyle='rgba(0,0,0,0.62)';
+    ctx.fillRect(px-w/2-1,y-1,w+2,7);
+    ctx.fillStyle='#5c1010'; ctx.fillRect(px-w/2,y,w,5);
+    ctx.fillStyle=m.cfg.boss?'#ff5a7a':'#e04848';
+    ctx.fillRect(px-w/2,y,w*(m.hp/maxHp),5);
+    ctx.restore();
+  }
+  if (m.cfg.boss){   // имя Босса над головой
+    ctx.save(); ctx.globalAlpha=alpha*(0.75+0.25*Math.sin(time*2));
+    ctx.fillStyle='#ffb0c0'; ctx.font='bold 13px sans-serif'; ctx.textAlign='center';
+    ctx.fillText(m.cfg.title, px, py-m.cfg.size*3.1);
+    ctx.restore();
+  }
+  if (m.stun>0){                   // оглушён (пережил аномалию/взрыв)
+    ctx.save();
+    ctx.globalAlpha=alpha*(0.5+0.4*Math.sin(time*18));
+    ctx.fillStyle='#ffe98a';
+    ctx.font='bold 15px sans-serif'; ctx.textAlign='center';
+    ctx.translate(px,py-m.cfg.size*2.3);
+    ctx.rotate(Math.floor(time*6)%2?0.5:-0.5);
+    ctx.fillText('✱',0,0);
+    ctx.restore();
+  }
+  if (m.sated>0){
+    ctx.save();
+    ctx.globalAlpha=alpha*(0.55+0.3*Math.sin(time*2));
+    ctx.fillStyle='#9fd0ff';
+    ctx.font='bold 15px sans-serif'; ctx.textAlign='center';
+    const ph=Math.floor(time*1.4)%2;
+    ctx.fillText(ph?'z Z':'Z z', px+m.cfg.size*1.5, py-m.cfg.size*1.9);
+    ctx.restore();
+  }
+  if (m.alert>0){
+    ctx.save();
+    ctx.globalAlpha=alpha*Math.min(1,m.alert*2);
+    ctx.fillStyle=m.alertMark==='!'?'#ff5555':'#ffcc55';
+    ctx.font='bold 20px sans-serif'; ctx.textAlign='center';
+    ctx.fillText(m.alertMark,px,py-m.cfg.size*2.2);
+    ctx.restore();
+  }
+}
+
+function drawMonster1(m,px,py,alpha,time){
+  const cfg=m.cfg,R=cfg.size,chasing=(m.state==='chase');
+  if (m.sated>0) alpha*=0.55;   // сытый — полупрозрачный, спит
+  if (chasing&&m.stun<=0){
+    const pulse=0.35+0.15*Math.sin(time*6);
+    const g=ctx.createRadialGradient(px,py,R*0.5,px,py,R*3.4);
+    g.addColorStop(0,cfg.auraColor+(0.30*pulse)+')');
+    g.addColorStop(1,cfg.auraColor+'0)');
+    ctx.save(); ctx.globalAlpha=alpha; ctx.fillStyle=g;
+    ctx.beginPath(); ctx.arc(px,py,R*3.4,0,TAU); ctx.fill(); ctx.restore();
+  }
+  ctx.save(); ctx.globalAlpha=alpha; ctx.translate(px,py); ctx.rotate(m.facing);
+  ctx.fillStyle='rgba(0,0,0,0.35)';
+  ctx.beginPath(); ctx.ellipse(2,3,R*1.15,R*0.95,0,0,TAU); ctx.fill();
+  const gait=time*(m.moving>1?(chasing?11:6):1.5);
+  ctx.strokeStyle=cfg.legColor; ctx.lineWidth=2.6; ctx.lineCap='round';
+  for (const sgn of [-1,1]) for (let i=0;i<3;i++){
+    const a=sgn*(0.75+i*0.72)+Math.sin(gait+i*1.25+(sgn>0?Math.PI:0))*0.26;
+    ctx.beginPath(); ctx.moveTo(0,0);
+    ctx.lineTo(Math.cos(a)*R*1.2,Math.sin(a)*R*1.2);
+    ctx.lineTo(Math.cos(a+sgn*0.45)*R*2.1,Math.sin(a+sgn*0.45)*R*2.1);
+    ctx.stroke();
+  }
+  ctx.fillStyle=cfg.bodyColor;
+  ctx.beginPath(); ctx.ellipse(-R*0.25,0,R*1.05,R*0.85,0,0,TAU); ctx.fill();
+  ctx.fillStyle=cfg.shellColor;
+  ctx.beginPath(); ctx.ellipse(-R*0.15,0,R*0.72,R*0.58,0,0,TAU); ctx.fill();
+  ctx.fillStyle=cfg.bodyColor;
+  ctx.beginPath(); ctx.arc(R*0.85,0,R*0.52,0,TAU); ctx.fill();
+  ctx.strokeStyle=cfg.legColor; ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(R*1.15,-R*0.28); ctx.lineTo(R*1.6,-R*0.12);
+  ctx.moveTo(R*1.15,R*0.28);  ctx.lineTo(R*1.6,R*0.12);
+  ctx.stroke();
+  ctx.fillStyle=cfg.eyeColor; ctx.globalAlpha=alpha*(chasing?1:0.75);
+  ctx.beginPath(); ctx.arc(R*1.02,-R*0.24,R*0.17,0,TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(R*1.02, R*0.24,R*0.17,0,TAU); ctx.fill();
+  ctx.restore();
+}
+
+// Охотник — фигура в тёмном плаще с капюшоном, горят глаза
+function drawMonster2(m,px,py,alpha,time){
+  const cfg=m.cfg,R=cfg.size,chasing=(m.state==='chase');
+  if (m.sated>0) alpha*=0.55;
+  if (chasing&&m.stun<=0){
+    const pulse=0.35+0.15*Math.sin(time*6);
+    const g=ctx.createRadialGradient(px,py,R*0.5,px,py,R*3.6);
+    g.addColorStop(0,cfg.auraColor+(0.30*pulse)+')');
+    g.addColorStop(1,cfg.auraColor+'0)');
+    ctx.save(); ctx.globalAlpha=alpha; ctx.fillStyle=g;
+    ctx.beginPath(); ctx.arc(px,py,R*3.6,0,TAU); ctx.fill(); ctx.restore();
+  }
+  ctx.save(); ctx.globalAlpha=alpha; ctx.translate(px,py); ctx.rotate(m.facing);
+  // тень
+  ctx.fillStyle='rgba(0,0,0,0.35)';
+  ctx.beginPath(); ctx.ellipse(2,4,R*1.05,R*0.85,0,0,TAU); ctx.fill();
+  // ноги, шагают
+  const gait=time*(m.moving>1?(chasing?11:6):1.4);
+  ctx.strokeStyle=cfg.bodyColor; ctx.lineWidth=3; ctx.lineCap='round';
+  for (const sgn of [-1,1]){
+    const a=0.35*Math.sin(gait+sgn*Math.PI);
+    ctx.beginPath();
+    ctx.moveTo(sgn*R*0.22,R*0.2);
+    ctx.lineTo(sgn*R*0.22+Math.sin(a)*R*0.55, R*0.2+Math.cos(a)*R*0.85);
+    ctx.stroke();
+  }
+  // плащ
+  const sway=Math.sin(time*(m.moving>1?(chasing?11:6):1.4))*0.10;
+  ctx.fillStyle=cfg.cloakColor;
+  ctx.beginPath();
+  ctx.moveTo(0,-R*1.18);
+  ctx.quadraticCurveTo(-R*1.05,-R*0.05,-R*1.12,R*0.45);
+  ctx.quadraticCurveTo(-R*0.88,R*1.0,-R*0.34,R*1.08+sway*R);
+  ctx.lineTo(R*0.34,R*1.08+sway*R);
+  ctx.quadraticCurveTo(R*0.88,R*1.0,R*1.12,R*0.45);
+  ctx.quadraticCurveTo(R*1.05,-R*0.05,0,-R*1.18);
+  ctx.closePath(); ctx.fill();
+  // тёмный подол
+  ctx.fillStyle=cfg.cloakDark;
+  ctx.beginPath();
+  ctx.moveTo(-R*1.0,R*0.62);
+  ctx.quadraticCurveTo(-R*0.78,R*1.0,-R*0.3,R*1.06+sway*R);
+  ctx.lineTo(R*0.3,R*1.06+sway*R);
+  ctx.quadraticCurveTo(R*0.78,R*1.0,R*1.0,R*0.62);
+  ctx.quadraticCurveTo(0,R*1.16,-R*1.0,R*0.62);
+  ctx.closePath(); ctx.fill();
+  // пояс
+  ctx.strokeStyle=cfg.beltColor; ctx.lineWidth=2.4;
+  ctx.beginPath(); ctx.moveTo(-R*0.9,R*0.18); ctx.lineTo(R*0.95,R*0.18); ctx.stroke();
+  ctx.fillStyle=cfg.beltColor;
+  ctx.fillRect(-R*0.34,R*0.06,R*0.22,R*0.3);
+  // голова в капюшоне
+  ctx.fillStyle=cfg.bodyColor;
+  ctx.beginPath(); ctx.arc(0,-R*0.7,R*0.62,0,TAU); ctx.fill();
+  ctx.fillStyle=cfg.cloakColor;
+  ctx.beginPath(); ctx.arc(0,-R*0.82,R*0.7,Math.PI*0.85,Math.PI*2.15); ctx.fill();
+  // горящие глаза
+  const glow=chasing?1:0.6;
+  ctx.fillStyle=cfg.eyeColor; ctx.globalAlpha=alpha*(glow);
+  ctx.beginPath(); ctx.arc(-R*0.18,-R*0.68,R*0.12,0,TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(R*0.18,-R*0.68,R*0.12,0,TAU); ctx.fill();
+  ctx.restore();
+}
+
+// Босс «Надзиратель» — колосс: чёрный доспех, алые руны, один горящий глаз-«окно»
+function drawMonster3(m,px,py,alpha,time){
+  const cfg=m.cfg,R=cfg.size,chasing=(m.state==='chase');
+  if (m.stun<=0){
+    const pulse=0.30+0.18*Math.sin(time*3);
+    const g=ctx.createRadialGradient(px,py,R*0.4,px,py,R*4.2);
+    g.addColorStop(0,cfg.auraColor+(chasing?0.34*pulse:0.14)+')');
+    g.addColorStop(1,cfg.auraColor+'0)');
+    ctx.save(); ctx.globalAlpha=alpha; ctx.fillStyle=g;
+    ctx.beginPath(); ctx.arc(px,py,R*4.2,0,TAU); ctx.fill(); ctx.restore();
+  }
+  ctx.save(); ctx.globalAlpha=alpha; ctx.translate(px,py); ctx.rotate(m.facing);
+  // тень
+  ctx.fillStyle='rgba(0,0,0,0.4)';
+  ctx.beginPath(); ctx.ellipse(3,5,R*1.3,R*1.05,0,0,TAU); ctx.fill();
+
+  const breathe=1+0.04*Math.sin(time*2);
+  ctx.scale(breathe,breathe);
+
+  // тяжёлые ноги-тумбы
+  ctx.fillStyle=cfg.armorColor;
+  for (const sgn of [-1,1]){
+    ctx.beginPath();
+    ctx.ellipse(sgn*R*0.5,R*0.75,R*0.42,R*0.55,0,0,TAU); ctx.fill();
+  }
+  ctx.strokeStyle=cfg.plateColor; ctx.lineWidth=2.5; ctx.lineCap='round';
+  const gait=time*(m.moving>1?(chasing?9:3):1);
+  for (const sgn of [-1,1]){
+    const a=0.30*Math.sin(gait+sgn*Math.PI);
+    ctx.beginPath();
+    ctx.moveTo(sgn*R*0.5,R*0.3);
+    ctx.lineTo(sgn*R*0.5+Math.sin(a)*R*0.4, R*0.7+Math.cos(a)*R*0.35);
+    ctx.stroke();
+  }
+  // корпус-глыба (бронированный)
+  ctx.fillStyle=cfg.bodyColor;
+  ctx.beginPath();
+  ctx.moveTo(0,-R*1.25);
+  ctx.quadraticCurveTo(-R*1.05,-R*0.35,-R*0.95,R*0.5);
+  ctx.quadraticCurveTo(-R*0.7,R*0.95,0,R*0.95);
+  ctx.quadraticCurveTo(R*0.7,R*0.95,R*0.95,R*0.5);
+  ctx.quadraticCurveTo(R*1.05,-R*0.35,0,-R*1.25);
+  ctx.closePath(); ctx.fill();
+  // плиты доспеха
+  ctx.strokeStyle=cfg.plateColor; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(0,-R*1.2); ctx.lineTo(0,R*0.9); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-R*0.85,R*0.15); ctx.quadraticCurveTo(0,-R*0.15,R*0.85,R*0.15);
+  ctx.stroke();
+  // наплечники с шипами
+  ctx.fillStyle=cfg.shellColor;
+  for (const sgn of [-1,1]){
+    ctx.beginPath();
+    ctx.moveTo(sgn*R*0.35,-R*0.95);
+    ctx.quadraticCurveTo(sgn*R*1.15,-R*0.85,sgn*R*1.05,-R*0.35);
+    ctx.quadraticCurveTo(sgn*R*0.75,-R*0.75,sgn*R*0.35,-R*0.6);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle=cfg.plateColor;
+    ctx.beginPath(); ctx.moveTo(sgn*R*1.0,-R*0.8); ctx.lineTo(sgn*R*1.55,-R*0.45); ctx.lineTo(sgn*R*0.95,-R*0.45); ctx.closePath(); ctx.fill();
+    ctx.fillStyle=cfg.shellColor;
+  }
+  // кисти-клешни
+  ctx.fillStyle=cfg.armorColor;
+  for (const sgn of [-1,1]){
+    ctx.beginPath(); ctx.arc(sgn*R*0.92,R*0.75,R*0.3,0,TAU); ctx.fill();
+    ctx.fillStyle=cfg.plateColor;
+    ctx.beginPath();
+    ctx.moveTo(sgn*R*0.95,R*0.5);
+    ctx.lineTo(sgn*R*1.35,R*0.7);
+    ctx.lineTo(sgn*R*0.95,R*0.95);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle=cfg.armorColor;
+  }
+  // голова-шлем с «окном»-глазом
+  ctx.fillStyle=cfg.armorColor;
+  ctx.beginPath();
+  ctx.moveTo(0,-R*1.85);
+  ctx.quadraticCurveTo(-R*0.55,-R*1.7,-R*0.5,-R*1.25);
+  ctx.lineTo(-R*0.5,-R*0.95);
+  ctx.lineTo(R*0.5,-R*0.95);
+  ctx.lineTo(R*0.5,-R*1.25);
+  ctx.quadraticCurveTo(R*0.55,-R*1.7,0,-R*1.85);
+  ctx.closePath(); ctx.fill();
+  // пульсирующее глаз-окно
+  const ep=0.55+0.45*Math.sin(time*(chasing?9:3));
+  ctx.save();
+  ctx.shadowColor=cfg.eyeColor; ctx.shadowBlur=12*ep;
+  ctx.fillStyle=cfg.eyeColor; ctx.globalAlpha=alpha*(0.6+0.4*ep);
+  ctx.fillRect(-R*0.32,-R*1.5,R*0.64,R*0.22);
+  ctx.beginPath(); ctx.arc(0,-R*1.39,R*0.1*ep,0,TAU); ctx.fill();
+  ctx.restore();
+  // алые руны на корпусе (мерцают)
+  const rp=0.5+0.5*Math.sin(time*2.6);
+  ctx.strokeStyle=`rgba(255,176,192,${0.55*rp})`; ctx.lineWidth=2;
+  for (let i=0;i<3;i++){
+    const yy=-R*0.5+i*R*0.38;
+    ctx.beginPath();
+    ctx.moveTo(-R*0.55,yy); ctx.lineTo(-R*0.22,yy-R*0.1); ctx.lineTo(-R*0.35,yy+R*0.12); ctx.lineTo(-R*0.05,yy);
+    ctx.stroke();
+  }
+  // трещины на шлеме
+  ctx.strokeStyle='rgba(255,90,122,0.35)'; ctx.lineWidth=1.5;
+  ctx.beginPath();
+  ctx.moveTo(-R*0.5,-R*1.4); ctx.lineTo(-R*0.35,-R*1.05);
+  ctx.moveTo(R*0.5,-R*1.45);  ctx.lineTo(R*0.32,-R*1.15);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawOverlay(title,color){
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.74)';
+  ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE);
+  ctx.textAlign='center';
+  ctx.fillStyle=color; ctx.font='bold 46px sans-serif';
+  ctx.fillText(title,CANVAS_SIZE/2,CANVAS_SIZE/2-24);
+  ctx.fillStyle='#cfd8e2'; ctx.font='17px sans-serif';
+  ctx.fillText(`Комнат пройдено: ${visited.size} из ${MAP.w*MAP.h}`,CANVAS_SIZE/2,CANVAS_SIZE/2+18);
+  ctx.fillText(`Звёзд потеряно ${caughtCount} · денег ${inv.coins} · кратчайший путь ${MAP.pathLen}`,
+               CANVAS_SIZE/2,CANVAS_SIZE/2+44);
+  ctx.fillStyle='#8a94a3'; ctx.font='14px sans-serif';
+  ctx.fillText('«Новый» — сгенерировать другой лабиринт',CANVAS_SIZE/2,CANVAS_SIZE/2+82);
+  ctx.restore();
+}
+
+function drawDebug(){
+  const pr=playerRoomForAI();
+  const near=monsters.filter(m=>Math.max(Math.abs(m.room.x-player.x),Math.abs(m.room.y-player.y))<=MONSTER_ACTIVE_RANGE);
+  const lines=[
+    `сид ${MAP.seed} · ${MAP.cfg.label} · ${MAP.w}×${MAP.h}`,
+    `игрок(${player.x},${player.y}) зона ${zoneAt(player.x,player.y)} · до выхода ${MAP.dist[player.y*MAP.w+player.x]}`,
+    `монстров ${monsters.length}`+
+      ` (Ползунов ${monsters.filter(m=>m.cfg.id==='monster1').length}`+
+      `, Охотников ${monsters.filter(m=>m.cfg.id==='monster2').length}`+
+      `, Боссов ${monsters.filter(m=>m.cfg.boss).length}),`+
+      ` активных ${near.length} · дверей ${doorAnims.size}`,
+    `предметов ${MAP.items.size} · магазинов ${MAP.shops.size} · замков ${MAP.locks.size}`,
+  ];
+  near.slice(0,5).forEach((m,i)=>{
+    lines.push(`M${i} ${m.state.padEnd(5)} r(${m.room.x},${m.room.y})`+
+      (m.cross?` ×${m.cross.dir}`:'')+(m.blockedWait>0?' WAIT':''));
+  });
+  const w=390,h=12+lines.length*15;
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.85)'; ctx.fillRect(8,8,w,h);
+  ctx.strokeStyle='#4a4'; ctx.lineWidth=1; ctx.strokeRect(8.5,8.5,w,h);
+  ctx.font='12px monospace'; ctx.textAlign='left'; ctx.fillStyle='#9f9';
+  lines.forEach((s,i)=>ctx.fillText(s,16,26+i*15));
+  ctx.restore();
+}
+
+// ============================================================
+// 13. КАРТА
+// ============================================================
+const mapCanvas=document.getElementById('mapCanvas');
+const mapCtx=mapCanvas.getContext('2d');
+const MAP_PX=384;
+let mapMode='local', mapDirty=true, mapTimer=0;
+
+function cellState(x,y){
+  if (!inBounds(x,y)) return 'out';
+  const k=`${x},${y}`;
+  if (visited.has(k)) return 'visited';
+  if (seen.has(k))    return 'seen';
+  return 'fog';
+}
+const showSolution=()=>SHOW_SOLUTION||hintPath;
+
+function drawMap(){
+  mapCtx.fillStyle='#0b0d10';
+  mapCtx.fillRect(0,0,MAP_PX,MAP_PX);
+  if (mapMode==='local') drawLocalMap(); else drawFullMap();
+}
+
+function mapStar(g,X,Y,R,color){
+  g.beginPath();
+  for (let i=0;i<10;i++){
+    const a=(i/10)*TAU-Math.PI/2, rr=(i%2===0)?R:R*0.45;
+    const x=X+Math.cos(a)*rr, y=Y+Math.sin(a)*rr;
+    if (i===0) g.moveTo(x,y); else g.lineTo(x,y);
+  }
+  g.closePath(); g.fillStyle=color; g.fill();
+}
+
+function drawLocalMap(){
+  const R=8, n=2*R+1;
+  const cs=Math.floor(MAP_PX/n);
+  const ox=Math.floor((MAP_PX-cs*n)/2), oy=ox;
+  const pad=Math.max(2,Math.round(cs*0.17));
+  const body=cs-2*pad;
+
+  const COL_VIS='#61707f', COL_SEEN='#2b3542', COL_SOL='#4e7a48',
+        COL_STUB='#3b4654', COL_HERE='#8ea4b8';
+
+  const px=dx=>ox+(dx+R)*cs, py=dy=>oy+(dy+R)*cs;
+
+  for (let dy=-R;dy<=R;dy++) for (let dx=-R;dx<=R;dx++){
+    const rx=player.x+dx, ry=player.y+dy;
+    const st=cellState(rx,ry);
+    if (st==='out'||st==='fog') continue;
+    const X=px(dx), Y=py(dy);
+    const here=(dx===0&&dy===0);
+    const onSol=showSolution()&&MAP.solutionSet.has(`${rx},${ry}`);
+
+    let col = st==='visited' ? (onSol?COL_SOL:COL_VIS) : COL_SEEN;
+    if (here) col=COL_HERE;
+    mapCtx.fillStyle=col;
+    mapCtx.fillRect(X+pad,Y+pad,body,body);
+
+    for (const d of ['E','S']){
+      const t=MAP.rooms[ry][rx][d];
+      if (t==='wall') continue;
+      const nx=rx+DIR[d].dx, ny=ry+DIR[d].dy;
+      const nst=cellState(nx,ny);
+      if (nst==='fog'||nst==='out') continue;
+      const nHere=(nx===player.x&&ny===player.y);
+      const nSol=showSolution()&&MAP.solutionSet.has(`${nx},${ny}`);
+      const nCol=nHere?COL_HERE:(nst==='visited'?(nSol?COL_SOL:COL_VIS):COL_SEEN);
+      let link=(col===COL_SEEN||nCol===COL_SEEN)?COL_SEEN:(here||nHere?COL_HERE:col);
+      if (t==='locked'){
+        const lk=MAP.locks.get(doorKey(rx,ry,d));
+        if (lk!==undefined) link=KEY_DEFS[lk].color;
+      }
+      mapCtx.fillStyle=link;
+      if (d==='E') mapCtx.fillRect(X+cs-pad,Y+pad,2*pad,body);
+      else         mapCtx.fillRect(X+pad,Y+cs-pad,body,2*pad);
+    }
+
+    for (const d of DIRS){
+      const t=MAP.rooms[ry][rx][d];
+      if (t==='wall') continue;
+      const nx=rx+DIR[d].dx, ny=ry+DIR[d].dy;
+      if (cellState(nx,ny)!=='fog') continue;
+      let stub=COL_STUB;
+      if (t==='locked'){
+        const lk=MAP.locks.get(doorKey(rx,ry,d));
+        if (lk!==undefined) stub=KEY_DEFS[lk].color;
+      }
+      mapCtx.fillStyle=stub;
+      if (d==='E') mapCtx.fillRect(X+cs-pad,Y+pad,pad,body);
+      if (d==='W') mapCtx.fillRect(X,Y+pad,pad,body);
+      if (d==='S') mapCtx.fillRect(X+pad,Y+cs-pad,body,pad);
+      if (d==='N') mapCtx.fillRect(X+pad,Y,body,pad);
+    }
+
+    const CX=X+cs/2, CY=Y+cs/2;
+    if (MAP.shops.has(`${rx},${ry}`)){
+      mapCtx.save();
+      mapCtx.translate(CX,CY); mapCtx.rotate(Math.PI/4);
+      mapCtx.fillStyle='#dfe6ee';
+      mapCtx.fillRect(-cs*0.19,-cs*0.19,cs*0.38,cs*0.38);
+      mapCtx.restore();
+    }
+    if (MAP.traps.has(`${rx},${ry}`)){
+      mapCtx.strokeStyle='#7ce0ff'; mapCtx.lineWidth=Math.max(1.5,cs*0.09);
+      mapCtx.beginPath(); mapCtx.arc(CX,CY,cs*0.2,0,TAU); mapCtx.stroke();
+      mapCtx.fillStyle='#7ce0ff';
+      mapCtx.beginPath(); mapCtx.arc(CX,CY,cs*0.07,0,TAU); mapCtx.fill();
+    }
+    const it=MAP.items.get(`${rx},${ry}`);
+    if (it){
+      if (it.type==='star') mapStar(mapCtx,CX,CY,cs*0.24,'#ffd451');
+      else if (it.type==='coin'){
+        mapCtx.fillStyle='#5fc98a';
+        mapCtx.beginPath(); mapCtx.arc(CX,CY,cs*0.19,0,TAU); mapCtx.fill();
+      } else if (it.type==='grenade'){
+        mapCtx.fillStyle='#2f3338';
+        mapCtx.beginPath(); mapCtx.arc(CX,CY,cs*0.19,0,TAU); mapCtx.fill();
+        mapCtx.strokeStyle='#9aa1ab'; mapCtx.lineWidth=1.5; mapCtx.stroke();
+      } else if (it.type==='apple'){
+        mapCtx.fillStyle='#ff8b77';
+        mapCtx.beginPath(); mapCtx.arc(CX,CY,cs*0.2,0,TAU); mapCtx.fill();
+      } else if (it.type==='key'){
+        mapCtx.fillStyle=KEY_DEFS[it.color].color;
+        mapCtx.fillRect(CX-cs*0.2,CY-cs*0.2,cs*0.4,cs*0.4);
+      }
+    }
+    if (rx===MAP.exit.x&&ry===MAP.exit.y){
+      mapCtx.fillStyle='#7ee06a';
+      mapCtx.fillRect(X+cs*0.28,Y+cs*0.28,cs*0.44,cs*0.44);
+    }
+  }
+
+  // монстры: обычные — если рядом (как на экране) и комната видна;
+  // Босса отмечаем всегда в пределах карты, чтобы не «терять» его.
+  for (const m of monsters){
+    const dx=m.room.x-player.x, dy=m.room.y-player.y;
+    const cheb=Math.max(Math.abs(dx),Math.abs(dy));
+    if (m.cfg.boss){
+      if (cheb>3) continue;   // как и на экране: за 3 комнатами Босс не виден
+      const X=px(dx)+cs/2, Y=py(dy)+cs/2;
+      mapCtx.save();
+      mapCtx.fillStyle='#b0172f';
+      mapCtx.beginPath();
+      mapCtx.arc(X,Y,cs*0.42,0,TAU); mapCtx.fill();
+      mapCtx.fillStyle='#ff9fb0';
+      mapCtx.beginPath();
+      mapCtx.arc(X,Y,cs*0.2,0,TAU); mapCtx.fill();
+      mapCtx.fillStyle='#3a0a12'; mapCtx.font='bold '+(cs*0.4)+'px sans-serif';
+      mapCtx.textAlign='center'; mapCtx.textBaseline='middle';
+      mapCtx.fillText('Б',X,Y+cs*0.05);
+      mapCtx.restore();
+      continue;
+    }
+    if (cheb>3) continue;   // та же зона, что рисуется на игровом экране
+    mapCtx.fillStyle='#d84a4a';
+    mapCtx.beginPath();
+    mapCtx.arc(px(dx)+cs/2,py(dy)+cs/2,cs*0.2,0,TAU);
+    mapCtx.fill();
+  }
+
+  mapCtx.fillStyle='#fff';
+  mapCtx.beginPath();
+  mapCtx.arc(px(0)+cs/2,py(0)+cs/2,cs*0.24,0,TAU);
+  mapCtx.fill();
+}
+
+/** Полная карта — прежний серый вариант. */
+function drawFullMap(){
+  const cs=Math.max(2,Math.floor(MAP_PX/MAP.w));
+  const ox=Math.floor((MAP_PX-cs*MAP.w)/2), oy=Math.floor((MAP_PX-cs*MAP.h)/2);
+  const inset=cs>=6?1:0;
+
+  mapCtx.globalAlpha=0.35;
+  for (let z=0;z<MAP.NZ;z++){
+    const b=MAP.bounds[z];
+    mapCtx.strokeStyle='#1c2430'; mapCtx.lineWidth=1;
+    mapCtx.strokeRect(ox+(MAP.cx-b)*cs, oy+(MAP.cy-b)*cs, (2*b+1)*cs, (2*b+1)*cs);
+  }
+  mapCtx.globalAlpha=1;
+
+  for (let y=0;y<MAP.h;y++) for (let x=0;x<MAP.w;x++){
+    const st=cellState(x,y);
+    if (st==='fog') continue;
+    const px=ox+x*cs, py=oy+y*cs;
+    if (st==='visited'){
+      const onSol=showSolution()&&MAP.solutionSet.has(`${x},${y}`);
+      mapCtx.fillStyle=onSol?'#5b8a52':'#4d5b6e';
+    } else mapCtx.fillStyle='#242c37';
+    mapCtx.fillRect(px+inset,py+inset,cs-inset*2,cs-inset*2);
+
+    if (inset && st==='visited'){
+      mapCtx.fillStyle='#4d5b6e';
+      for (const d of ['E','S']){
+        if (MAP.rooms[y][x][d]==='wall') continue;
+        const nx=x+DIR[d].dx, ny=y+DIR[d].dy;
+        if (!inBounds(nx,ny)||cellState(nx,ny)==='fog') continue;
+        if (d==='E') mapCtx.fillRect(px+cs-inset,py+inset,inset*2,cs-inset*2);
+        else         mapCtx.fillRect(px+inset,py+cs-inset,cs-inset*2,inset*2);
+      }
+    }
+  }
+
+  // ориентиры
+  if (cs>=5){
+    for (const k of MAP.shops){
+      const [x,y]=k.split(',').map(Number);
+      if (cellState(x,y)==='fog') continue;
+      mapCtx.fillStyle='#dfe6ee';
+      mapCtx.fillRect(ox+x*cs+inset,oy+y*cs+inset,cs-inset*2,cs-inset*2);
+    }
+    for (const k of MAP.traps){
+      const [x,y]=k.split(',').map(Number);
+      if (cellState(x,y)==='fog') continue;
+      mapCtx.fillStyle='#7ce0ff';
+      mapCtx.fillRect(ox+x*cs+inset,oy+y*cs+inset,cs-inset*2,cs-inset*2);
+    }
+    for (const [k,it] of MAP.items){
+      const [x,y]=k.split(',').map(Number);
+      if (cellState(x,y)==='fog') continue;
+      const CX=ox+x*cs+cs/2, CY=oy+y*cs+cs/2;
+      if (it.type==='key'){
+        mapCtx.fillStyle=KEY_DEFS[it.color].color;
+        mapCtx.fillRect(ox+x*cs+inset,oy+y*cs+inset,cs-inset*2,cs-inset*2);
+      } else if (it.type==='star'){
+        mapCtx.fillStyle='#ffd451';
+        mapCtx.beginPath(); mapCtx.arc(CX,CY,Math.max(1.4,cs*0.26),0,TAU); mapCtx.fill();
+      } else if (it.type==='coin'){
+        mapCtx.fillStyle='#5fc98a';
+        mapCtx.beginPath(); mapCtx.arc(CX,CY,Math.max(1.2,cs*0.22),0,TAU); mapCtx.fill();
+      } else if (it.type==='apple'){
+        mapCtx.fillStyle='#ff8b77';
+        mapCtx.beginPath(); mapCtx.arc(CX,CY,Math.max(1.2,cs*0.2),0,TAU); mapCtx.fill();
+      }
+    }
+    for (const [dk,ci] of MAP.locks){
+      const p=parseDoorKey(dk);
+      if (cellState(p.x,p.y)==='fog') continue;
+      mapCtx.fillStyle=KEY_DEFS[ci].color;
+      const px=ox+p.x*cs, py=oy+p.y*cs;
+      if (p.dir==='E') mapCtx.fillRect(px+cs-inset,py+inset,inset*2+1,cs-inset*2);
+      else             mapCtx.fillRect(px+inset,py+cs-inset,cs-inset*2,inset*2+1);
+    }
+  }
+
+  if (showSolution()||hintExit||cellState(MAP.exit.x,MAP.exit.y)!=='fog'){
+    mapCtx.fillStyle='#7ee06a';
+    mapCtx.fillRect(ox+MAP.exit.x*cs-1,oy+MAP.exit.y*cs-1,cs+2,cs+2);
+  }
+
+  for (const m of monsters){
+    if (!m.cfg.boss) continue;
+    const cx=ox+m.room.x*cs+cs/2, cy=oy+m.room.y*cs+cs/2;
+    const r=Math.max(4,cs*0.8);
+    mapCtx.save();
+    mapCtx.globalAlpha=0.9;
+    mapCtx.fillStyle='#8e0e24';
+    mapCtx.beginPath();
+    mapCtx.moveTo(cx,cy-r);
+    mapCtx.lineTo(cx+r*0.7,cy-r*0.2);
+    mapCtx.lineTo(cx+r*0.45,cy+r);
+    mapCtx.lineTo(cx-r*0.45,cy+r);
+    mapCtx.lineTo(cx-r*0.7,cy-r*0.2);
+    mapCtx.closePath(); mapCtx.fill();
+    mapCtx.fillStyle='#ffd7de';
+    mapCtx.font='bold '+(cs*0.8)+'px sans-serif';
+    mapCtx.textAlign='center'; mapCtx.textBaseline='middle';
+    mapCtx.fillText('Б',cx,cy+cs*0.1);
+    mapCtx.restore();
+  }
+
+  mapCtx.strokeStyle='rgba(255,255,255,0.22)'; mapCtx.lineWidth=1;
+  mapCtx.strokeRect(ox+(player.x-8)*cs,oy+(player.y-8)*cs,17*cs,17*cs);
+
+  mapCtx.fillStyle='#fff';
+  mapCtx.beginPath();
+  mapCtx.arc(ox+player.x*cs+cs/2,oy+player.y*cs+cs/2,Math.max(2,cs*0.55),0,TAU);
+  mapCtx.fill();
+}
+
+// ============================================================
+// 14. МАГАЗИН
+// ============================================================
+const shopPanel=document.getElementById('shopPanel');
+const shopBody=document.getElementById('shopBody');
+
+function inShop(){ return MAP && MAP.shops.has(`${player.x},${player.y}`) && !move; }
+
+let shopHover=-1;               // индекс товара под курсором (для подсветки), -1 = нет
+
+// Товар под точкой экрана (для клика/наведения). Работает, когда игрок в магазине:
+// тогда центр комнаты совпадает с центром экрана.
+function shopSlotAt(mx,my){
+  const c=CANVAS_SIZE/2;
+  for (let i=0;i<SHOW_XS.length;i++){
+    if (Math.hypot(mx-(c+SHOW_XS[i]), my-(c+SHOW_Y)) <= SHOW_HIT) return i;
+  }
+  return -1;
+}
+
+function buyShopSlot(i){
+  const g=shopGoods()[i];
+  if (!g) return;
+  if (g.sold){ flashMessage('Этот товар уже куплен'); return; }
+  if (inv.coins<g.price){
+    flashMessage(`Не хватает ${g.price-inv.coins} ₥`);
+    return;
+  }
+  buy(g.id,g.price);
+}
+
+function refreshShop(){
+  if (!MAP) return;
+  const open=inShop();
+  shopPanel.classList.toggle('dim',!open);
+  if (!open){
+    shopBody.innerHTML='<div style="font-size:12px;color:#6f7887;line-height:1.5">Витрина работает, когда вы в комнате-магазине.<br>Найдите её (на карте — белый квадрат).</div>';
+    return;
+  }
+  const goods=shopGoods();
+  let html=
+    '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">'+
+    '<span style="color:#c8cfd8">Вы в магазине</span><b style="color:#5fc98a">₥ '+inv.coins+'</b></div>'+
+    '<div style="font-size:11px;color:#6f7887;line-height:1.5">Купить: клик по товару на витрине (в комнате) или клавиша 1–6.</div>'+
+    '<div style="margin-top:6px">';
+  for (let i=0;i<goods.length;i++){
+    const g=goods[i];
+    const pr=g.sold
+      ?'<span style="color:#6f7887">куплено</span>'
+      :'<span style="color:'+(inv.coins>=g.price?'#5fc98a':'#b06a6a')+'">'+g.price+' ₥</span>';
+    html+='<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:2.5px 0;border-bottom:1px solid #22262d">'+
+      '<span><b style="color:#8a94a3">'+(i+1)+'</b> '+g.name+'</span>'+pr+'</div>';
+  }
+  html+='</div>';
+  shopBody.innerHTML=html;
+}
+
+function buy(id,price){
+  if (inv.coins<price) return;
+  inv.coins-=price;
+  if (id==='star'){ inv.stars++; flashMessage('Куплена звезда защиты'); }
+  else if (id==='grenade'){ inv.grenades++; flashMessage('Куплена граната'); maybeGrenadeInfo(); }
+  else if (id==='teleport'){ inv.teleports++; flashMessage('Куплен свиток телепорта'); maybeTeleportInfo(); }
+  else if (id==='apple'){ inv.apples++; flashMessage('Куплено яблоко (E — оставить приманку в комнате)'); }
+  else if (id==='hintExit'){
+    hintExit=true; mapDirty=true;
+    flashMessage(`Выход в комнате ${MAP.exit.x},${MAP.exit.y}`);
+  }
+  else if (id==='hintPath'){
+    hintPath=true; mapDirty=true;
+    flashMessage('Путь к выходу отмечен на карте');
+  }
+  updateHud();
+}
+
+// ============================================================
+// 14а. ПАУЗА, СОХРАНЕНИЕ, ЗАГРУЗКА
+// ============================================================
+const pauseOverlay=document.getElementById('pauseOverlay');
+const pauseInfo=document.getElementById('pauseInfo');
+const SAVE_KEY='labirint_v14_save';
+let paused=false;
+
+function serializeMonster(m){
+  return {
+    id:m.cfg.id, hp:m.hp, maxHp:m.maxHp,
+    starDamage:m.starDamage!==undefined?m.starDamage:m.cfg.starDamage,
+    room:{x:m.room.x,y:m.room.y}, home:{x:m.home.x,y:m.home.y},
+    x:m.x, y:m.y, facing:m.facing,
+    state:m.state, reason:m.reason||'',
+    targetRoom:m.targetRoom?{x:m.targetRoom.x,y:m.targetRoom.y}:null,
+    patrolRoom:m.patrolRoom?{x:m.patrolRoom.x,y:m.patrolRoom.y}:null,
+    alert:m.alert, stun:m.stun, sated:m.sated,
+    wanderWait:m.wanderWait, blockedWait:m.blockedWait,
+  };
+}
+
+function makeSave(){
+  if (!MAP) return null;
+  return JSON.stringify({
+    v:1,
+    diff:diffSel.value, seed:WORLD_SEED,
+    player:{x:player.x,y:player.y},
+    visited:[...visited], seen:[...seen],
+    inv:{stars:inv.stars, coins:inv.coins, grenades:inv.grenades, teleports:inv.teleports,
+         apples:inv.apples, keys:inv.keys.slice()},
+    caughtCount, hintExit, hintPath,
+    gameWon, gameOver, gameOverText,
+    monsters:monsters.map(serializeMonster),
+    shopSold:{hintExit,hintPath},
+    savedAt:new Date().toISOString(),
+  });
+}
+
+function resumeFromData(d){
+  if (!d||!DIFFICULTY[d.diff]) return false;
+  const cfg=DIFFICULTY[d.diff];
+  WORLD_SEED=d.seed;
+  MAP=generateMaze(cfg,WORLD_SEED);
+  patternCache.clear(); doorAnims.clear();
+  grenades=[]; explosions=[]; teleFx=null; zaps=[];
+  move=null; unlocking=null; queuedMove=null; heldDirs.length=0;
+  visual.offsetX=0; visual.offsetY=0;
+  visited=new Set(d.visited||[]);
+  seen=new Set(d.seen||[]);
+  const iv=d.inv||{};
+  inv.stars=iv.stars!==undefined?iv.stars:START_STARS;
+  inv.coins=iv.coins||0; inv.grenades=iv.grenades||0;
+  inv.teleports=iv.teleports||0; inv.apples=iv.apples||0;
+  inv.keys=(iv.keys&&iv.keys.slice())||[false,false,false];
+  caughtCount=d.caughtCount||0;
+  hintExit=!!d.hintExit; hintPath=!!d.hintPath;
+  gameWon=!!d.gameWon; gameOver=!!d.gameOver;
+  gameOverText=d.gameOverText||'ВАС СЪЕЛИ';
+  caughtEl.textContent=caughtCount;
+
+  const p=d.player||{x:MAP.start.x,y:MAP.start.y};
+  player.x=clamp(p.x,0,MAP.w-1); player.y=clamp(p.y,0,MAP.h-1);
+  camX=roomCX(player.x); camY=roomCY(player.y);
+
+  monsters=[];
+  for (const md of d.monsters||[]){
+    const base=MONSTER_TYPES[md.id]; if (!base) continue;
+    const m={
+      cfg:base, maxHp:md.maxHp||base.maxHp,
+      starDamage:md.starDamage!==undefined?md.starDamage:base.starDamage,
+      hp:Math.max(1,md.hp||1), dead:false,
+      home:{x:md.home.x,y:md.home.y}, room:{x:md.room.x,y:md.room.y},
+      x:md.x, y:md.y, facing:md.facing||0,
+      state:md.state||'idle', reason:md.reason||'',
+      targetRoom:md.targetRoom?{x:md.targetRoom.x,y:md.targetRoom.y}:null,
+      cross:null, ignoreDoorKey:null,
+      wanderTarget:null, wanderWait:md.wanderWait||0,
+      patrolRoom:md.patrolRoom?{x:md.patrolRoom.x,y:md.patrolRoom.y}:null,
+      chkT:0, alert:md.alert||0, alertMark:'!',
+      stun:md.stun||0, sated:md.sated||0,
+      moving:0, blockedWait:0,
+    };
+    monsters.push(m);
+  }
+
+  diffSel.value=d.diff;
+  seedOut.textContent=String(WORLD_SEED);
+  updateHud();
+  enterRoom(player.x,player.y,true);
+  mapDirty=true;
+  return true;
+}
+
+function doSaveGame(){
+  try{
+    const t=makeSave();
+    if (!t) return;
+    localStorage.setItem(SAVE_KEY,t);
+    const dt=new Date();
+    flashMessage('Сохранено ('+dt.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})+'): сид '+WORLD_SEED);
+  }catch(err){ flashMessage('Не удалось сохранить: '+err.message); }
+}
+
+function doLoadGame(fromPause){
+  try{
+    const raw=localStorage.getItem(SAVE_KEY);
+    if (!raw){ flashMessage('Нет сохранённой игры'); return; }
+    const d=JSON.parse(raw);
+    if (!resumeFromData(d)){ flashMessage('Сохранение не подходит к этой версии'); return; }
+    if (fromPause) closePause();
+    flashMessage('Игра загружена (сид '+WORLD_SEED+')');
+  }catch(err){ flashMessage('Ошибка загрузки: '+err.message); }
+}
+
+function refreshPauseInfo(){
+  pauseInfo.innerHTML =
+    'Сложность: <b>'+MAP.cfg.label+'</b> · сид <b>'+WORLD_SEED+'</b><br>'+
+    'Комната '+player.x+','+player.y+' · монстров '+monsters.length+
+    ' · пройдено '+visited.size+' из '+MAP.w*MAP.h;
+}
+function openPause(){
+  if (!MAP) return;
+  paused=true;
+  heldDirs.length=0; queuedMove=null;   // не «идти» после паузы от зажатой клавиши
+  refreshPauseInfo();
+  pauseOverlay.classList.add('show');
+}
+function closePause(){
+  paused=false;
+  pauseOverlay.classList.remove('show');
+  lastTime=performance.now();   // чтобы при возобновлении не было скачка времени
+}
+function togglePause(){
+  if (paused) closePause(); else openPause();
+}
+
+document.getElementById('pauseResume').onclick=()=>closePause();
+document.getElementById('pauseSave').onclick=()=>{ doSaveGame(); refreshPauseInfo(); };
+document.getElementById('pauseQuit').onclick=()=>{
+  showModal('Выйти без сохранения?',
+    'Текущая партия (сид '+WORLD_SEED+') будет потеряна, если вы не сохранили её заранее. '+
+    'Сгенерировать новый лабиринт?',
+    ()=>{ closePause(); newGame(diffSel.value); }, false);
+};
+document.getElementById('loadBtn').onclick=()=>doLoadGame(false);
+
+// ============================================================
+// 14б. ВСТАВКА СИДА
+// ============================================================
+const seedIn=document.getElementById('seedIn');
+const seedApply=document.getElementById('applySeed');
+function applyPastedSeed(){
+  const txt=(seedIn.value||'').trim();
+  if (!txt){ flashMessage('Пусто — вставьте сид'); return; }
+  const n=parseInt(txt.replace(/[^0-9]/g,''),10);
+  if (isNaN(n)||String(n).length<1){ flashMessage('Не похоже на сид (число)'); return; }
+  newGame(diffSel.value,n);
+  seedIn.value='';
+  flashMessage('Сгенерирован лабиринт по сиду '+n);
+}
+seedApply.onclick=()=>applyPastedSeed();
+seedIn.addEventListener('keydown',(e)=>{
+  if (e.key==='Enter'){ e.preventDefault(); applyPastedSeed(); }
+});
+
+// ============================================================
+// 15. МОДАЛЬНОЕ ОКНО
+// ============================================================
+const modal=document.getElementById('modal');
+let modalCb=null;
+function showModal(title,text,onYes,okOnly){
+  document.getElementById('modalTitle').textContent=title;
+  document.getElementById('modalText').textContent=text;
+  document.getElementById('modalNo').style.display = okOnly ? 'none' : '';
+  modalCb=onYes;
+  modal.classList.add('show');
+}
+document.getElementById('modalYes').onclick=()=>{
+  modal.classList.remove('show');
+  const cb=modalCb; modalCb=null;
+  if (cb) cb();
+};
+document.getElementById('modalNo').onclick=()=>{ modal.classList.remove('show'); modalCb=null; };
+
+// ============================================================
+// 16. UI И ВВОД
+// ============================================================
+const diffSel=document.getElementById('diffSel');
+const seedOut=document.getElementById('seedOut');
+
+function newGame(diffKey,seed){
+  const cfg=DIFFICULTY[diffKey];
+  if (diffSel && diffSel.value!==diffKey) diffSel.value=diffKey;   // синхронизировать выбор
+  WORLD_SEED=(seed===undefined)?(Math.random()*0x7fffffff)|0:seed;
+  MAP=generateMaze(cfg,WORLD_SEED);
+
+  patternCache.clear(); doorAnims.clear();
+  visited.clear(); seen.clear();
+  grenades=[]; explosions=[]; teleFx=null; zaps=[];
+  queuedMove=null; heldDirs.length=0;
+  gameWon=false; gameOver=false; gameOverText='ВАС СЪЕЛИ'; move=null; unlocking=null;
+  visual.offsetX=0; visual.offsetY=0;
+  hintExit=false; hintPath=false;
+  caughtCount=0; caughtEl.textContent='0';
+  inv.stars=START_STARS; inv.coins=0; inv.grenades=0; inv.teleports=0; inv.apples=0;
+  inv.keys=[false,false,false];
+
+  player.x=MAP.start.x; player.y=MAP.start.y;
+  camX=roomCX(player.x); camY=roomCY(player.y);
+
+  placeMonsters(mulberry32(WORLD_SEED^0x9e3779b9));
+  updateHud();
+  enterRoom(player.x,player.y);
+
+  seedOut.textContent=String(WORLD_SEED);
+  mapDirty=true;
+  flashMessage(`${MAP.w}×${MAP.h} · монстров ${monsters.length} · замков ${MAP.locks.size} · путь ${MAP.pathLen}`);
+}
+
+function onWin(){ if (!gameWon){ gameWon=true; flashMessage('Вы нашли выход!'); } }
+
+const canvasPoint=e=>{
+  const rect=canvas.getBoundingClientRect();
+  return {
+    x:(e.clientX-rect.left)*(canvas.width/rect.width),
+    y:(e.clientY-rect.top)*(canvas.height/rect.height),
+  };
+};
+
+canvas.addEventListener('click',(e)=>{
+  const {x:mx,y:my}=canvasPoint(e);
+  // в магазине клик по витрине — покупка, а не ходьба
+  if (inShop()){
+    const si=shopSlotAt(mx,my);
+    if (si>=0){ buyShopSlot(si); return; }
+  }
+  const dx=Math.round((mx-CANVAS_SIZE/2)/ROOM_SIZE);
+  const dy=Math.round((my-CANVAS_SIZE/2)/ROOM_SIZE);
+  if (Math.abs(dx)+Math.abs(dy)!==1) return;
+  const dir=DIRS.find(d=>DIR[d].dx===dx&&DIR[d].dy===dy);
+  if (dir) tryMove(dir);
+});
+
+canvas.addEventListener('mousemove',(e)=>{
+  const {x:mx,y:my}=canvasPoint(e);
+  if (!inShop()){ shopHover=-1; canvas.style.cursor=''; return; }
+  const si=shopSlotAt(mx,my);
+  shopHover=si;
+  const g=si>=0?shopGoods()[si]:null;
+  canvas.style.cursor=(si>=0&&!g.sold)?'pointer':'default';
+});
+canvas.addEventListener('mouseleave',()=>{ shopHover=-1; canvas.style.cursor=''; });
+
+chipGren.onclick=()=>{ if (inv.grenades>0) dropGrenade(); };
+chipTele.onclick=()=>{ useTeleport(); };
+chipApple.onclick=()=>{ if (inv.apples>0) dropApple(); };
+
+const dbgBtn=document.getElementById('dbgBtn');
+const solBtn=document.getElementById('solBtn');
+const mLocal=document.getElementById('modeLocal');
+const mFull=document.getElementById('modeFull');
+
+function setMapMode(mode){
+  mapMode=mode; mapDirty=true;
+  mLocal.classList.toggle('on',mode==='local');
+  mFull.classList.toggle('on',mode==='full');
+}
+mLocal.onclick=()=>{setMapMode('local');mLocal.blur();};
+mFull.onclick =()=>{setMapMode('full'); mFull.blur();};
+dbgBtn.onclick=()=>{ DEBUG=!DEBUG; dbgBtn.classList.toggle('on',DEBUG); dbgBtn.blur(); };
+solBtn.onclick=()=>{
+  SHOW_SOLUTION=!SHOW_SOLUTION;
+  solBtn.classList.toggle('on',SHOW_SOLUTION);
+  mapDirty=true; solBtn.blur();
+};
+document.getElementById('newBtn').onclick=()=>newGame(diffSel.value);
+document.getElementById('copySeed').onclick=()=>{
+  navigator.clipboard?.writeText(String(WORLD_SEED));
+  flashMessage('Сид скопирован');
+};
+
+// --- настройки ввода ---
+const bufSel=document.getElementById('bufSel');
+const holdBtn=document.getElementById('holdBtn');
+bufSel.value=String(TUNE.inputBuffer);
+bufSel.onchange=()=>{
+  TUNE.inputBuffer=parseFloat(bufSel.value);
+  flashMessage(TUNE.inputBuffer>0
+    ? `Буфер хода: ${TUNE.inputBuffer>=99?'весь ход':Math.round(TUNE.inputBuffer*1000)+' мс'}`
+    : 'Буфер хода выключен');
+  bufSel.blur();
+};
+holdBtn.onclick=()=>{
+  TUNE.holdToMove=!TUNE.holdToMove;
+  holdBtn.textContent='Удержание: '+(TUNE.holdToMove?'вкл':'выкл');
+  holdBtn.classList.toggle('on',TUNE.holdToMove);
+  flashMessage(TUNE.holdToMove?'Держите клавишу — персонаж идёт непрерывно':'Удержание клавиши отключено');
+  holdBtn.blur();
+};
+
+// --- чит-панель для тестов ---
+{
+  const cp=document.getElementById('cheatPanel');
+  if (!TUNE.cheats) cp.style.display='none';
+  document.getElementById('cheatAll').onclick=(e)=>{
+    inv.stars+=10; inv.coins+=500; inv.grenades+=10; inv.teleports+=5; inv.apples+=10;
+    inv.keys=[true,true,true];
+    updateHud(); flashMessage('ЧИТ: +10★ +500₥ +10✹ +5⌖ +10◉ + все ключи');
+    e.target.blur();
+  };
+  document.getElementById('cheatKeys').onclick=(e)=>{
+    inv.keys=[true,true,true]; updateHud();
+    flashMessage('ЧИТ: все ключи'); e.target.blur();
+  };
+  document.getElementById('cheatHints').onclick=(e)=>{
+    hintExit=true; hintPath=true; mapDirty=true;
+    flashMessage(`ЧИТ: подсказки куплены, выход в ${MAP.exit.x},${MAP.exit.y}`);
+    e.target.blur();
+  };
+  document.getElementById('cheatToExit').onclick=(e)=>{
+    if (gameWon||gameOver) return;
+    const c=MAP.solution[Math.max(0,MAP.solution.length-2)];
+    move=null; unlocking=null; queuedMove=null;
+    visual.offsetX=0; visual.offsetY=0;
+    player.x=c.x; player.y=c.y;
+    camX=roomCX(c.x); camY=roomCY(c.y);
+    enterRoom(c.x,c.y);
+    flashMessage('ЧИТ: телепорт к предпоследней комнате пути');
+    e.target.blur();
+  };
+  document.getElementById('cheatKill').onclick=(e)=>{
+    let n=0;
+    for (let i=monsters.length-1;i>=0;i--){
+      const m=monsters[i];
+      if (Math.max(Math.abs(m.room.x-player.x),Math.abs(m.room.y-player.y))>2) continue;
+      if (m.cross) releaseDoor(m.cross.key,m);
+      monsters.splice(i,1); n++;
+    }
+    flashMessage(`ЧИТ: убрано монстров: ${n}`);
+    e.target.blur();
+  };
+  document.getElementById('cheatHunter').onclick=(e)=>{
+    // спавн Охотника в 2..3 комнатах от игрока (по пути)
+    const W=MAP.w, kk=(x,y)=>y*W+x;
+    const vis=new Set([kk(player.x,player.y)]);
+    const q=[{x:player.x,y:player.y,d:0}], opts=[];
+    for (let h=0;h<q.length;h++){
+      const c=q[h];
+      if (c.d>=2&&c.d<=3){
+        const k=`${c.x},${c.y}`;
+        if (!MAP.shops.has(k)&&!MAP.traps.has(k)) opts.push(c);
+      }
+      if (c.d>=3) continue;
+      for (const d of DIRS){
+        const t=sideType(c.x,c.y,d);
+        if (t==='wall'||t==='locked') continue;
+        const nx=c.x+DIR[d].dx, ny=c.y+DIR[d].dy;
+        if (!inBounds(nx,ny)) continue;
+        const k=kk(nx,ny);
+        if (vis.has(k)) continue;
+        vis.add(k); q.push({x:nx,y:ny,d:c.d+1});
+      }
+    }
+    if (opts.length){
+      const c=opts[Math.floor(Math.random()*opts.length)];
+      spawnMonster('monster2',c.x,c.y);
+      flashMessage('ЧИТ: Охотник появился неподалёку');
+    } else flashMessage('ЧИТ: рядом нет подходящей комнаты');
+    e.target.blur();
+  };
+  document.getElementById('cheatTrap').onclick=(e)=>{
+    // телепорт в ближайшую аномалию — проверить, что вам она не вредит
+    if (gameOver||gameWon) return;
+    const W=MAP.w, kk=(x,y)=>y*W+x;
+    const vis=new Set([kk(player.x,player.y)]);
+    const q=[{x:player.x,y:player.y,d:0}]; let found=null;
+    for (let h=0;h<q.length&&!found;h++){
+      const c=q[h];
+      if (c.d>0&&MAP.traps.has(`${c.x},${c.y}`)){ found=c; break; }
+      if (c.d>=40) continue;
+      for (const d of DIRS){
+        const t=sideType(c.x,c.y,d);
+        if (t==='wall') continue;
+        if (t==='locked'&&!inv.keys[MAP.locks.get(doorKey(c.x,c.y,d))]) continue;
+        const nx=c.x+DIR[d].dx, ny=c.y+DIR[d].dy;
+        if (!inBounds(nx,ny)) continue;
+        const k=kk(nx,ny);
+        if (vis.has(k)) continue;
+        vis.add(k); q.push({x:nx,y:ny,d:c.d+1});
+      }
+    }
+    if (found){
+      move=null; unlocking=null; queuedMove=null;
+      visual.offsetX=0; visual.offsetY=0;
+      player.x=found.x; player.y=found.y;
+      camX=roomCX(player.x); camY=roomCY(player.y);
+      teleFx={t:0};
+      enterRoom(found.x,found.y);
+      flashMessage('ЧИТ: вы в аномалии (вам безопасно)');
+    } else flashMessage('ЧИТ: аномалии не достичь');
+    e.target.blur();
+  };
+}
+
+function inputFocused(){
+  const t=e=>e&&(e.tagName==='INPUT'||e.tagName==='SELECT'||e.tagName==='TEXTAREA'||e.isContentEditable);
+  return t(document.activeElement);
+}
+document.addEventListener('keydown',(e)=>{
+  if (inputFocused()) return;             // не мешать вводу в полях (сид и пр.)
+  if (e.code==='KeyP'&&!e.repeat){ e.preventDefault(); togglePause(); return; }
+  if (paused) return;                     // на паузе клавиши игрока глухи
+  if (modal.classList.contains('show')) return;
+  if (e.code==='F2'&&!e.repeat){ e.preventDefault(); dbgBtn.click(); return; }
+  if (e.code==='KeyM'&&!e.repeat){ e.preventDefault(); setMapMode(mapMode==='local'?'full':'local'); return; }
+  if (e.code==='KeyG'&&!e.repeat){ e.preventDefault(); dropGrenade(); return; }
+  if (e.code==='KeyT'&&!e.repeat){ e.preventDefault(); useTeleport(); return; }
+  if (e.code===TUNE.appleKey&&!e.repeat){ e.preventDefault(); dropApple(); return; }
+  // покупка на витрине клавишами 1..5 (только находясь в магазине)
+  if (inShop()&&/^Digit[1-6]$/.test(e.code)&&!e.repeat){
+    e.preventDefault();
+    buyShopSlot(parseInt(e.code.slice(5),10)-1);
+    return;
+  }
+  let dir=null;
+  if (e.key==='ArrowUp'||e.code==='KeyW') dir='N';
+  else if (e.key==='ArrowDown'||e.code==='KeyS') dir='S';
+  else if (e.key==='ArrowLeft'||e.code==='KeyA') dir='W';
+  else if (e.key==='ArrowRight'||e.code==='KeyD') dir='E';
+  if (!dir) return;
+  e.preventDefault();
+  if (e.repeat) return;                       // автоповтор ОС игнорируем
+  if (!heldDirs.includes(dir)) heldDirs.push(dir);
+  tryMove(dir);
+});
+
+document.addEventListener('keyup',(e)=>{
+  let dir=null;
+  if (e.key==='ArrowUp'||e.code==='KeyW') dir='N';
+  else if (e.key==='ArrowDown'||e.code==='KeyS') dir='S';
+  else if (e.key==='ArrowLeft'||e.code==='KeyA') dir='W';
+  else if (e.key==='ArrowRight'||e.code==='KeyD') dir='E';
+  if (!dir) return;
+  const i=heldDirs.indexOf(dir);
+  if (i>=0) heldDirs.splice(i,1);
+});
+window.addEventListener('blur',()=>{ heldDirs.length=0; queuedMove=null; });
+
+let messageTimer=null;
+function flashMessage(text){
+  msgEl.textContent=' · '+text;
+  clearTimeout(messageTimer);
+  messageTimer=setTimeout(()=>{msgEl.textContent='';},2400);
+}
+
+// ============================================================
+// 17. ЦИКЛ
+// ============================================================
+newGame('normal');
+
+let lastTime=performance.now();
+function loop(now){
+  const dt=Math.min((now-lastTime)/1000,0.05);
+  lastTime=now;
+  if (paused){ requestAnimationFrame(loop); return; }   // ПАУЗА: мир замер
+
+  updateUnlock(dt);
+  updatePlayer(dt);
+  camX=roomCX(player.x)+visual.offsetX;
+  camY=roomCY(player.y)+visual.offsetY;
+
+  for (const m of monsters) updateMonster(m,dt);
+  purgeDead();
+  resolveOverlaps();
+  updateDoors(dt);
+  updateGrenades(dt);
+
+  render(now/1000);
+
+  mapTimer+=dt;
+  if (mapDirty||mapTimer>0.1){ drawMap(); mapDirty=false; mapTimer=0; }
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a35dcd826b78e4d1',t:'MTc4ODUzMzM4Ng=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
