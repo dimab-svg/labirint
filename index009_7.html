@@ -1,0 +1,2004 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Лабиринт комнат — дизайн v3</title>
+<style>
+  body{margin:0;background:#0b0b0e;color:#ddd;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;padding:20px}
+  #game{background:#000;border:2px solid #333;cursor:pointer;box-shadow:0 0 40px #000}
+  #info{margin-top:10px;font-size:14px;text-align:center;min-height:20px}
+  #msg{color:#ff8;margin-left:10px}
+  #hint{margin-top:6px;font-size:12px;color:#888}
+</style>
+</head>
+<body>
+
+<canvas id="game" width="800" height="800"></canvas>
+<div id="info">Комната: <span id="pos">2, 2</span><span id="msg"></span>&nbsp;|&nbsp;Пойман: <span id="caught">0</span></div>
+<div id="hint">Клик по соседней комнате или стрелки. Клавиша L — переключить освещение</div>
+
+<script>
+// ############################################################################
+// #  БЛОК A. БАЗА: константы, карта, игрок, canvas.  (механика — не трогаем)  #
+// ############################################################################
+const CANVAS_SIZE = 800;
+const ROOM_SIZE   = 250;
+const MAP_W = 15, MAP_H = 15;
+const T_OPEN = 0.6, T_MOVE = 1.0, T_CLOSE = 0.6;
+const DOOR_WIDTH = 100;
+
+const DIR = {
+  N:{dx:0,dy:-1,opp:'S'}, S:{dx:0,dy:1,opp:'N'},
+  E:{dx:1,dy:0,opp:'W'},  W:{dx:-1,dy:0,opp:'E'},
+};
+const SWING_BY_DIR = {N:+1,S:-1,E:+1,W:-1};
+
+function mulberry32(seed){
+  return function(){
+    seed|=0; seed=seed+0x6D2B79F5|0;
+    let t=Math.imul(seed^seed>>>15,1|seed);
+    t=t+Math.imul(t^t>>>7,61|t)^t;
+    return((t^t>>>14)>>>0)/4294967296;
+  };
+}
+function roomSeed(x,y){return((x*374761393+y*668265263+7)^0x5bd1e995)|0;}
+
+function buildMap(w,h){
+  const rooms=[];
+  for(let y=0;y<h;y++){const row=[];for(let x=0;x<w;x++){
+    row.push({
+      N:y>0?'closed':'wall', S:y<h-1?'closed':'wall',
+      E:x<w-1?'closed':'wall', W:x>0?'closed':'wall',
+    });
+  }rooms.push(row);}
+  return{w,h,rooms};
+}
+const MAP=buildMap(MAP_W,MAP_H);
+function inBounds(x,y){return x>=0&&y>=0&&x<MAP.w&&y<MAP.h;}
+
+// --- ТОЛЬКО ДЛЯ ДЕМО: пара запертых дверей и глухих стен, чтобы увидеть, как они выглядят.
+//     В вашей игре этого блока нет — удалите.
+function setDoor(x,y,dir,type){
+  MAP.rooms[y][x][dir]=type;
+  const nx=x+DIR[dir].dx,ny=y+DIR[dir].dy;
+  if(inBounds(nx,ny))MAP.rooms[ny][nx][DIR[dir].opp]=type;
+}
+'locked1'; setDoor(1,2,'S','wall'); setDoor(2,1,'W','wall'); 'locked3';
+// --- конец демо-блока
+
+function doorKey(x,y,dir){
+  const nx=x+DIR[dir].dx, ny=y+DIR[dir].dy;
+  if(y<ny||(y===ny&&x<nx))return`${x},${y},${dir}`;
+  return`${nx},${ny},${DIR[dir].opp}`;
+}
+
+const player={x:2,y:2};
+const visual={offsetX:0,offsetY:0};
+let transition=null;
+
+const canvas=document.getElementById('game');
+const ctx=canvas.getContext('2d');
+const posEl=document.getElementById('pos');
+const msgEl=document.getElementById('msg');
+
+function easeInOut(t){return t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;}
+
+
+// ############################################################################
+// #                                                                          #
+// #                         ДИЗАЙН — НАЧАЛО                                  #
+// #                                                                          #
+// #  Этот блок целиком переносится в вашу игру.                              #
+// #  Вставлять: ПОСЛЕ  const ctx = canvas.getContext('2d');                  #
+// #             ПЕРЕД  разделом «ПЕРЕХОДЫ» (startTransition и далее).        #
+// #                                                                          #
+// #  Из старого кода при этом УДАЛИТЬ (они заменяются):                      #
+// #    roomColor, patternCache, getRoomPattern, line, drawParallels, drawHex, #
+// #    render, drawRoomFloor, drawWalls, sideSegment, openingPoints,          #
+// #    collectDoors, drawDoorLeaf, strokeLine, drawFog,                       #
+// #    константы DOOR_COLOR, DOOR_LOCKED_COLOR, WALL_COLOR (если есть).       #
+// #                                                                          #
+// #  Блок ОЖИДАЕТ, что выше уже объявлены:                                   #
+// #    CANVAS_SIZE, ROOM_SIZE, DOOR_WIDTH, DIR, MAP, player, visual,          #
+// #    transition, ctx, mulberry32, roomSeed, doorKey, inBounds.             #
+// #                                                                          #
+// #  Блок ДАЁТ наружу: render(now), facing, roomScreenPos(rx,ry), LIGHT.     #
+// #                                                                          #
+// ############################################################################
+
+// ============================================================
+// B1. НАСТРОЙКИ — всё, что имеет смысл крутить руками
+// ============================================================
+const S = ROOM_SIZE;            // короткое имя размера комнаты (используется везде ниже)
+const WALL_T = 22;              // толщина стены, px
+const PILLAR = WALL_T * 1.6;    // размер угловой колонны
+const CENTER_R = 80;            // радиус «сцены» в центре комнаты: декор сюда не кладётся (место для предметов)
+const FLOOR_CACHE_MAX = 64;     // сколько готовых полов держим в памяти (LRU); при 1500 комнатах все хранить нельзя
+const ZONE = 3;                 // зона ZONE×ZONE комнат имеет общую палитру
+const PAT_M = S * 0.5;          // запас за границами комнаты для повёрнутых узоров
+const DECOR = {
+  rug:   0.12,                  // вероятность ковра в комнате (0 = ковров нет)
+  props: 2.6,                   // среднее число мелкого декора: лужи, щебень, решётки, кости (0 = выкл.)
+};
+
+// --- ПЕРСОНАЖ: оставьте раскомментированной ОДНУ строку ---
+//const PLAYER_STYLE = 'figure';  // 1) путник в плаще с факелом
+ const PLAYER_STYLE = 'orb';  // 2) светящийся шар («игрок — это свет»)
+// const PLAYER_STYLE = 'dot';  // 3) простой кружок с указателем направления (прежний вариант)
+const PLAYER_SCALE = 1.25;      // масштаб фигурки
+let facing = 'S';               // куда смотрит игрок; обновляется из transition.dir
+
+// --- ОСВЕЩЕНИЕ: три пресета, клавиша L переключает их по кругу ---
+//  alpha:  прозрачность [текущая, соседняя, диагональная] комната (1 = ярко, 0 = чёрное)
+//  inner:  радиус полностью светлого круга вокруг игрока, в долях ROOM_SIZE (0.5 = до стен текущей комнаты)
+//  mid:    где (0..1) между inner и краем экрана стоит средняя точка тумана; midA — его плотность там
+//  outerA: плотность тумана на краю экрана (1 = абсолютно чёрный)
+//  playerA: яркость тёплого света от игрока
+//  torchNeighbor: множитель яркости факелов в НЕ текущих комнатах (0.25 = соседняя комната почти не подсвечена)
+const LIGHT_PRESETS = {
+  soft:  { alpha:[1,0.85,0.65], inner:0.45, mid:0.55, midA:0.35, outerA:0.93, playerA:0.14, torchNeighbor:1    },
+  moody: { alpha:[1,0.70,0.45], inner:0.32, mid:0.50, midA:0.55, outerA:0.98, playerA:0.20, torchNeighbor:0.5  },
+  dark:  { alpha:[1,0.55,0.25], inner:0.25, mid:0.45, midA:0.70, outerA:1.00, playerA:0.26, torchNeighbor:0.25 },
+};
+let lightName = 'soft';         // <-- стартовый режим. Когда выберете — впишите сюда
+let LIGHT = LIGHT_PRESETS[lightName];
+function cycleLight(){
+  const names=Object.keys(LIGHT_PRESETS);
+  lightName=names[(names.indexOf(lightName)+1)%names.length];
+  LIGHT=LIGHT_PRESETS[lightName];
+  if(typeof flashMessage==='function')flashMessage('Свет: '+lightName);
+}
+document.addEventListener('keydown',e=>{if(e.key==='l'||e.key==='L'||e.key==='д'||e.key==='Д')cycleLight();});
+
+// ============================================================
+// B2. МЕЛКИЕ УТИЛИТЫ
+// ============================================================
+function hsl(h,s,l,a=1){return`hsla(${h},${s}%,${l}%,${a})`;}
+function line(c,x1,y1,x2,y2){c.beginPath();c.moveTo(x1,y1);c.lineTo(x2,y2);c.stroke();}
+// tone(P, d) — цвет пола комнаты, сдвинутый по яркости на d (P — «паспорт» комнаты, см. buildFloor)
+function tone(P,d,a=1){return hsl(P.fh,P.fs,Math.max(4,Math.min(92,P.fl+d)),a);}
+// Экранные координаты центра комнаты (rx,ry). Пригодится для монстров и предметов.
+function roomScreenPos(rx,ry){
+  return{x:CANVAS_SIZE/2+(rx-player.x)*S-visual.offsetX, y:CANVAS_SIZE/2+(ry-player.y)*S-visual.offsetY};
+}
+
+// ============================================================
+// B3. ПАЛИТРЫ (ТЕМЫ)
+//   Каждая тема: floor=[hue, sat, light] пола, wall=[hue, sat, light] стен.
+//   Зона ZONE×ZONE комнат берёт одну тему; внутри зоны пол чуть варьируется.
+// ============================================================
+const THEMES=[
+  {floor:[215,8,36], wall:[215,10,26]},  // серый камень
+  {floor:[100,16,30],wall:[105,14,22]},  // мох / сырость
+  {floor:[35,32,42], wall:[30,26,30]},   // песчаник
+  {floor:[222,22,32],wall:[225,22,22]},  // холодный склеп
+  {floor:[12,28,28], wall:[10,22,18]},   // тёмный кирпич
+  {floor:[250,10,20],wall:[250,12,14]},  // базальт
+  {floor:[40,10,56], wall:[40,8,40]},    // светлый мрамор
+  {floor:[22,40,32], wall:[20,30,22]},   // ржавый / медный
+  {floor:[150,14,26],wall:[150,12,18]},  // болото
+  {floor:[0,22,24],  wall:[0,26,16]},    // вулканический камень
+  {floor:[200,30,48],wall:[205,25,34]},  // лёд
+  {floor:[60,20,38], wall:[55,18,26]},   // охра
+];
+const RUG_HUES=[0,14,28,345,215,265,40]; // оттенки ковров (приглушённые красные/синие/золотые)
+const themeCache=new Map();
+function roomTheme(x,y){
+  const key=x+','+y; if(themeCache.has(key))return themeCache.get(key);
+  const zx=Math.floor(x/ZONE), zy=Math.floor(y/ZONE);
+  const zr=mulberry32(roomSeed(zx*31+7,zy*17+3));      // случайность зоны
+  const base=THEMES[Math.floor(zr()*THEMES.length)];
+  const rr=mulberry32(roomSeed(x,y)^0x1234567);        // случайность комнаты
+  const j=(a,d)=>a+(rr()-0.5)*2*d;                     // джиттер ±d
+  const t={
+    floor:[(j(base.floor[0],6)+360)%360, Math.max(0,j(base.floor[1],4)), base.floor[2]],
+    wall:base.wall,                                    // стены НЕ джиттерим — общая стена двух комнат одного цвета
+    floorL:j(base.floor[2],5),
+    rugHue:RUG_HUES[Math.floor(rr()*RUG_HUES.length)],
+  };
+  themeCache.set(key,t); return t;
+}
+
+// ============================================================
+// B4. ПОЛ КОМНАТЫ
+//   getRoomFloor(rx,ry) -> offscreen-canvas 400×400 (с LRU-кэшем).
+//   buildFloor рисует: заливку → узор → износ → крапинки → трещины → декор → виньетку.
+//   Всё детерминировано seed'ом комнаты: при возвращении комната выглядит так же.
+// ============================================================
+const floorCache=new Map();
+function getRoomFloor(rx,ry){
+  const key=rx+','+ry;
+  if(floorCache.has(key)){const v=floorCache.get(key);floorCache.delete(key);floorCache.set(key,v);return v;} // «освежить» в LRU
+  const off=buildFloor(rx,ry);
+  floorCache.set(key,off);
+  if(floorCache.size>FLOOR_CACHE_MAX)floorCache.delete(floorCache.keys().next().value); // выкинуть самый старый
+  return off;
+}
+function buildFloor(rx,ry){
+  const off=document.createElement('canvas'); off.width=off.height=S;
+  const c=off.getContext('2d');
+  const th=roomTheme(rx,ry);
+  const rng=mulberry32(roomSeed(rx,ry)); const r=()=>rng();
+  // «паспорт» комнаты, который передаём во все рисовалки
+  const P={c,r,th,fh:th.floor[0],fs:th.floor[1],fl:th.floorL};
+
+  // 1) базовая заливка
+  c.fillStyle=tone(P,0); c.fillRect(0,0,S,S);
+
+  // 2) узор (один из PATTERNS), возможно повёрнутый
+  const pat=PATTERNS[Math.floor(r()*PATTERNS.length)];
+  c.save();
+  if(pat.rot){
+    const m=r(), a=m<0.5?0:m<0.7?Math.PI/4:m<0.85?Math.PI/2:(r()-0.5)*0.5;
+    c.translate(S/2,S/2); c.rotate(a); c.translate(-S/2,-S/2);
+  }
+  c.strokeStyle=tone(P,-22,0.6); c.lineWidth=1.2; c.lineJoin='round'; // цвет «швов»
+  pat.draw(P);
+  c.restore();
+
+  // 3) износ: затёртости, мох у стен, перекос освещения
+  addWear(P);
+
+  // 4) крапинки
+  const n=180+Math.floor(r()*300);
+  for(let i=0;i<n;i++){
+    c.fillStyle=r()<0.55?'rgba(0,0,0,0.16)':'rgba(255,255,255,0.09)';
+    c.beginPath(); c.arc(r()*S,r()*S,0.6+r()*1.8,0,Math.PI*2); c.fill();
+  }
+  // 5) трещины (начинаются вне центра)
+  const cracks=Math.floor(r()*3.5);
+  for(let i=0;i<cracks;i++)drawCrack(P);
+
+  // 6) декор: ковры, лужи, щебень, решётки, кости — всё вне CENTER_R
+  addDecor(P);
+
+  // 7) виньетка: светлее в центре, темнее у стен
+  const g=c.createRadialGradient(S/2,S/2,30,S/2,S/2,S*0.72);
+  g.addColorStop(0,'rgba(255,235,190,0.10)'); g.addColorStop(1,'rgba(0,0,0,0.22)');
+  c.fillStyle=g; c.fillRect(0,0,S,S);
+  edgeShadow(c);
+  return off;
+}
+
+// ---------- B4a. УЗОРЫ ПОЛА ----------
+// Каждый элемент: {rot: можно ли поворачивать, draw(P)}. Рисует на P.c, случайность берёт из P.r().
+function drawParallels(c,angle,step){
+  const cos=Math.cos(angle),sin=Math.sin(angle),nx=-sin,ny=cos,len=S*1.5;
+  for(let d=-S*1.2;d<S*1.2;d+=step){const px=S/2+nx*d,py=S/2+ny*d;line(c,px-cos*len,py-sin*len,px+cos*len,py+sin*len);}
+}
+function hexPath(c,cx,cy,r){
+  c.beginPath();
+  for(let i=0;i<6;i++){const a=i/6*Math.PI*2,x=cx+Math.cos(a)*r,y=cy+Math.sin(a)*r;i?c.lineTo(x,y):c.moveTo(x,y);}
+  c.closePath();
+}
+const PATTERNS=[
+  {rot:true,draw:P=>{ // 0. плитка: ровная / шахматка / разнотон
+    const{c,r}=P,st=26+Math.floor(r()*44),mode=Math.floor(r()*3);
+    for(let x=-PAT_M;x<S+PAT_M;x+=st)for(let y=-PAT_M;y<S+PAT_M;y+=st){
+      const i=Math.round(x/st),k=Math.round(y/st);
+      const d=mode===1?(((i+k)&1)?-4:3):mode===2?(r()-0.5)*9:0;
+      if(d){c.fillStyle=tone(P,d);c.fillRect(x,y,st,st);}
+      c.strokeRect(x,y,st,st);
+    }}},
+  {rot:false,draw:P=>drawParallels(P.c,0.3+P.r(),26+Math.floor(P.r()*40))},                                   // 1. диагонали
+  {rot:false,draw:P=>{const a=0.3+P.r()*0.6,st=26+Math.floor(P.r()*40);drawParallels(P.c,a,st);drawParallels(P.c,a+Math.PI/2,st);}}, // 2. диаг. сетка
+  {rot:false,draw:P=>{const st=30+Math.floor(P.r()*30),a=P.r()*Math.PI;for(let i=0;i<3;i++)drawParallels(P.c,a+i*Math.PI/3,st);}},   // 3. треугольники
+  {rot:false,draw:P=>{const a=0.4+P.r()*0.4;drawParallels(P.c,a,30+Math.floor(P.r()*30));drawParallels(P.c,-a,30+Math.floor(P.r()*30));}}, // 4. ромбы
+  {rot:true,draw:P=>{ // 5. кирпич
+    const{c,r}=P,bh=16+Math.floor(r()*22),bw=bh*2+Math.floor(r()*30),mottled=r()<0.6;
+    for(let row=Math.floor(-PAT_M/bh);row*bh<S+PAT_M;row++){const y=row*bh,off=(row&1)*bw/2;
+      for(let x=-PAT_M+off-bw;x<S+PAT_M;x+=bw){if(mottled){c.fillStyle=tone(P,(r()-0.5)*10);c.fillRect(x,y,bw,bh);}c.strokeRect(x,y,bw,bh);}}}},
+  {rot:false,draw:P=>{ // 6. концентрические круги (+иногда лучи; центр чистый)
+    const{c,r}=P,rs=22+Math.floor(r()*30),rays=r()<0.4?Math.floor(8+r()*16):0;
+    for(let rad=rs;rad<S*0.75;rad+=rs){c.beginPath();c.arc(S/2,S/2,rad,0,Math.PI*2);c.stroke();}
+    for(let i=0;i<rays;i++){const a=i/rays*Math.PI*2;line(c,S/2+Math.cos(a)*rs,S/2+Math.sin(a)*rs,S/2+Math.cos(a)*S,S/2+Math.sin(a)*S);}}},
+  {rot:false,draw:P=>{ // 7. неровные плиты
+    const{c,r}=P,st=40+Math.floor(r()*40),n=Math.max(4,Math.round(S/st)),cs=S/n,jt=cs*0.22,G=[];
+    for(let i=0;i<=n;i++){G.push([]);for(let k=0;k<=n;k++){const e=(i===0||i===n||k===0||k===n);
+      G[i].push([i*cs+(e?0:(r()-0.5)*2*jt),k*cs+(e?0:(r()-0.5)*2*jt)]);}}
+    for(let i=0;i<n;i++)for(let k=0;k<n;k++){
+      c.fillStyle=tone(P,(r()-0.5)*8);c.beginPath();
+      for(const[a,b]of[[i,k],[i+1,k],[i+1,k+1],[i,k+1]]){const p=G[a][b];(a===i&&b===k)?c.moveTo(p[0],p[1]):c.lineTo(p[0],p[1]);}
+      c.closePath();c.fill();c.stroke();}}},
+  {rot:false,draw:P=>{ // 8. соты
+    const{c,r}=P,R=15+Math.floor(r()*17),w=1.5*R,h=Math.sqrt(3)*R,mode=r()<0.5;
+    for(let col=-1;col*w<S+w;col++)for(let row=-1;row*h<S+h;row++){
+      hexPath(c,col*w,row*h+((col&1)?h/2:0),R);
+      if(mode){c.fillStyle=tone(P,(r()-0.5)*9);c.fill();}c.stroke();}}},
+  {rot:false,draw:P=>{ // 9. волны
+    const{c,r}=P,amp=5+r()*12,fr=0.01+r()*0.03,ph=r()*6.28,ws=25+Math.floor(r()*35);
+    for(let y=ws;y<S;y+=ws){c.beginPath();for(let x=0;x<=S;x+=4){const wy=y+Math.sin(x*fr+ph)*amp;x?c.lineTo(x,wy):c.moveTo(x,wy);}c.stroke();}}},
+  {rot:true,draw:P=>{ // 10. чешуя
+    const{c,r}=P,tw=30+Math.floor(r()*26),tH=tw*0.8;
+    for(let row=Math.floor(-PAT_M/tH);row*tH<S+PAT_M;row++){const off=(row&1)*(tw/2);
+      for(let x=-PAT_M-tw;x<S+PAT_M;x+=tw){c.beginPath();c.arc(x+off+tw/2,row*tH+tH,tw/2,Math.PI,Math.PI*2);c.stroke();}}}},
+  {rot:true,draw:P=>{ // 11. доски
+    const{c,r}=P,bw=20+Math.floor(r()*18);
+    for(let y=-PAT_M;y<S+PAT_M;y+=bw){let x=-PAT_M-r()*200;
+      while(x<S+PAT_M){const len=110+r()*160;
+        c.fillStyle=tone(P,(r()-0.5)*8);c.fillRect(x,y,len,bw);c.strokeRect(x,y,len,bw);
+        c.save();c.strokeStyle=tone(P,-10,0.35);c.lineWidth=1;const n=1+Math.floor(r()*3);
+        for(let g=1;g<=n;g++){const gy=y+bw*g/(n+1)+(r()-0.5)*3;line(c,x+4,gy,x+len-4,gy+(r()-0.5)*4);}
+        c.restore();x+=len;}}}},
+  {rot:false,draw:P=>{ // 12. булыжник
+    const{c,r}=P,st=18+Math.floor(r()*18);
+    c.fillStyle=tone(P,-12);c.fillRect(0,0,S,S);
+    for(let x=-st;x<S+st;x+=st)for(let y=-st;y<S+st;y+=st){
+      const cx=x+st/2+(r()-0.5)*st*0.4,cy=y+st/2+(r()-0.5)*st*0.4,rx=st*(0.36+r()*0.14),ry=st*(0.36+r()*0.14),a=r()*Math.PI;
+      c.fillStyle=tone(P,(r()-0.5)*12+2);c.beginPath();c.ellipse(cx,cy,rx,ry,a,0,Math.PI*2);c.fill();c.stroke();
+      c.fillStyle='rgba(255,255,255,0.07)';c.beginPath();c.ellipse(cx-rx*0.25,cy-ry*0.25,rx*0.4,ry*0.3,a,0,Math.PI*2);c.fill();}}},
+  {rot:true,draw:P=>{ // 13. плетёнка
+    const{c,r}=P,b=36+Math.floor(r()*28),n=2+Math.floor(r()*2);
+    for(let x=-PAT_M;x<S+PAT_M;x+=b)for(let y=-PAT_M;y<S+PAT_M;y+=b){
+      const i=Math.round(x/b),k=Math.round(y/b),h=((i+k)&1)===0;
+      c.fillStyle=tone(P,h?2:-3);c.fillRect(x,y,b,b);c.strokeRect(x,y,b,b);
+      for(let s=1;s<n;s++){h?line(c,x,y+b*s/n,x+b,y+b*s/n):line(c,x+b*s/n,y,x+b*s/n,y+b);}}}},
+  {rot:false,draw:P=>{ // 14. ёлочка (паркет под 45°)
+    const{c,r}=P,w=14+Math.floor(r()*12);
+    c.save();c.translate(S/2,S/2);c.rotate(Math.PI/4+(r()<0.5?0:Math.PI/2));c.translate(-S/2,-S/2);
+    const n0=Math.floor(-PAT_M/w),n1=Math.ceil((S+PAT_M)/w);
+    for(let i=n0;i<n1;i++)for(let k=n0;k<n1;k++){
+      const res=((i-k)%4+4)%4;if(res!==0&&res!==2)continue;
+      c.fillStyle=tone(P,(r()-0.5)*9);
+      if(res===0){c.fillRect(i*w,k*w,2*w,w);c.strokeRect(i*w,k*w,2*w,w);}
+      else{c.fillRect(i*w,(k-1)*w,w,2*w);c.strokeRect(i*w,(k-1)*w,w,2*w);}}
+    c.restore();}},
+  {rot:true,draw:P=>{ // 15. октагоны с квадратиками
+    const{c,r}=P,st=40+Math.floor(r()*36),ct=st*0.29;
+    for(let x=-PAT_M;x<S+PAT_M;x+=st)for(let y=-PAT_M;y<S+PAT_M;y+=st){
+      c.beginPath();c.moveTo(x+ct,y);c.lineTo(x+st-ct,y);c.lineTo(x+st,y+ct);c.lineTo(x+st,y+st-ct);
+      c.lineTo(x+st-ct,y+st);c.lineTo(x+ct,y+st);c.lineTo(x,y+st-ct);c.lineTo(x,y+ct);c.closePath();c.stroke();
+      c.fillStyle=tone(P,-7);c.beginPath();c.moveTo(x,y-ct);c.lineTo(x+ct,y);c.lineTo(x,y+ct);c.lineTo(x-ct,y);c.closePath();c.fill();c.stroke();}}},
+  {rot:false,draw:P=>{ // 16. крупные плиты (рекурсивное деление)
+    const{c,r}=P,min=50+r()*40;
+    const split=(x,y,w,h,d)=>{
+      if(d>5||(w<min*2&&h<min*2)||(d>1&&r()<0.25)){c.fillStyle=tone(P,(r()-0.5)*7);c.fillRect(x,y,w,h);c.strokeRect(x,y,w,h);return;}
+      const t=0.35+r()*0.3;
+      if(w>=h){split(x,y,w*t,h,d+1);split(x+w*t,y,w*(1-t),h,d+1);}else{split(x,y,w,h*t,d+1);split(x,y+h*t,w,h*(1-t),d+1);}
+    };
+    split(0,0,S,S,0);}},
+  {rot:false,draw:P=>{ // 17. мозаика (иногда с кольцом-медальоном)
+    const{c,r}=P,st=9+Math.floor(r()*6),ring=r()<0.5;
+    c.fillStyle=tone(P,-14);c.fillRect(0,0,S,S);
+    for(let x=0;x<S;x+=st)for(let y=0;y<S;y+=st){
+      const dist=Math.hypot(x+st/2-S/2,y+st/2-S/2),onRing=ring&&Math.abs(dist-150)<st*0.7;
+      c.fillStyle=onRing?hsl(P.th.rugHue,35,40+(r()-0.5)*10):tone(P,(r()-0.5)*12);
+      c.fillRect(x+1,y+1,st-2,st-2);}}},
+];
+
+// ---------- B4b. ИЗНОС, ТРЕЩИНЫ, ТЕНЬ У СТЕН ----------
+function addWear(P){
+  const{c,r}=P;
+  const n=Math.floor(r()*4);                                    // затёртые пятна
+  for(let i=0;i<n;i++){const x=r()*S,y=r()*S,rad=40+r()*100;
+    const g=c.createRadialGradient(x,y,0,x,y,rad);g.addColorStop(0,'rgba(0,0,0,0.2)');g.addColorStop(1,'rgba(0,0,0,0)');
+    c.fillStyle=g;c.fillRect(x-rad,y-rad,rad*2,rad*2);}
+  if(r()<0.35){const m=1+Math.floor(r()*4);                      // мох/сырость у стен
+    for(let i=0;i<m;i++){const side=Math.floor(r()*4),t=r()*S,rad=40+r()*70;
+      const x=side<2?t:(side===2?0:S),y=side===0?0:(side===1?S:t),h=95+r()*30;
+      const g=c.createRadialGradient(x,y,0,x,y,rad);g.addColorStop(0,hsl(h,35,28,0.45));g.addColorStop(1,hsl(h,35,28,0));
+      c.fillStyle=g;c.fillRect(x-rad,y-rad,rad*2,rad*2);}}
+  if(r()<0.5){const a=r()*Math.PI*2,gx=Math.cos(a)*S/2,gy=Math.sin(a)*S/2; // одна сторона чуть темнее
+    const g=c.createLinearGradient(S/2-gx,S/2-gy,S/2+gx,S/2+gy);g.addColorStop(0,'rgba(0,0,0,0)');g.addColorStop(1,'rgba(0,0,0,0.18)');
+    c.fillStyle=g;c.fillRect(0,0,S,S);}
+}
+function drawCrack(P){
+  const{c,r}=P;let x,y;
+  do{x=r()*S;y=r()*S;}while(Math.hypot(x-S/2,y-S/2)<CENTER_R+20);  // не начинать в центре
+  let a=r()*Math.PI*2;
+  c.save();c.strokeStyle='rgba(0,0,0,0.35)';c.lineWidth=1.5;c.lineCap='round';
+  c.beginPath();c.moveTo(x,y);
+  const n=4+Math.floor(r()*6);
+  for(let i=0;i<n;i++){a+=(r()-0.5)*1.4;const l=8+r()*22;x+=Math.cos(a)*l;y+=Math.sin(a)*l;c.lineTo(x,y);}
+  c.stroke();c.restore();
+}
+function edgeShadow(c){ // тёмная полоса вдоль всех четырёх стен
+  const d=46;
+  for(const[x1,y1,x2,y2]of[[0,0,0,d],[0,S,0,S-d],[0,0,d,0],[S,0,S-d,0]]){
+    const g=c.createLinearGradient(x1,y1,x2,y2);g.addColorStop(0,'rgba(0,0,0,0.45)');g.addColorStop(1,'rgba(0,0,0,0)');
+    c.fillStyle=g;c.fillRect(0,0,S,S);}
+}
+
+// ---------- B4c. ДЕКОР (всегда вне центральной зоны CENTER_R) ----------
+// pickSpot — найти место для прямоугольника w×h, не задевающее центр; null, если не нашлось
+function pickSpot(r,w,h,tries=12){
+  for(let i=0;i<tries;i++){
+    const x=30+r()*(S-60-w),y=30+r()*(S-60-h);
+    const cx=Math.max(x,Math.min(S/2,x+w)),cy=Math.max(y,Math.min(S/2,y+h));
+    if(Math.hypot(cx-S/2,cy-S/2)>CENTER_R)return{x,y};
+  }
+  return null;
+}
+function addDecor(P){
+  const{r}=P;
+  if(r()<DECOR.rug)drawRug(P);
+  const n=Math.floor(r()*DECOR.props);
+  for(let i=0;i<n;i++){const k=r();
+    if(k<0.3)drawPuddle(P);else if(k<0.6)drawRubble(P);else if(k<0.8)drawGrate(P);else drawBones(P);}
+}
+function drawRug(P){
+  const{c,r,th}=P;let x,y,w,h,horiz;
+  const kind=Math.floor(r()*3),INSET=52,FR=8;   // INSET — отступ от стены (вне полосы тени), FR — длина бахромы
+  if(kind===0){ // дорожка вдоль стены
+    horiz=r()<0.5;
+    const maxLen=S-2*(INSET+FR);
+    const len=Math.min(160+r()*120,maxLen),wid=48+r()*18;
+    const start=INSET+FR+r()*(maxLen-len);
+    if(horiz){w=len;h=wid;x=start;y=r()<0.5?INSET:S-INSET-h;}
+    else{w=wid;h=len;y=start;x=r()<0.5?INSET:S-INSET-w;}
+  }else if(kind===1){ // коврик у двери
+    const side=Math.floor(r()*4),len=90,wid=46;horiz=side<2;
+    if(side===0){w=len;h=wid;x=(S-w)/2;y=WALL_T/2+6;}
+    else if(side===1){w=len;h=wid;x=(S-w)/2;y=S-WALL_T/2-6-h;}
+    else if(side===2){w=wid;h=len;y=(S-h)/2;x=WALL_T/2+6;}
+    else{w=wid;h=len;y=(S-h)/2;x=S-WALL_T/2-6-w;}
+  }else{ // угловой
+    const sz=60+r()*40;w=sz;h=sz*(0.7+r()*0.4);horiz=w>=h;
+    x=r()<0.5?INSET:S-INSET-w;y=r()<0.5?INSET:S-INSET-h;
+  }
+  const hue=th.rugHue,base=hsl(hue,42,30),light=hsl(hue,50,55),dark=hsl(hue,45,18);
+  c.save();
+  c.fillStyle='rgba(0,0,0,0.3)';c.fillRect(x+3,y+4,w,h);                 // тень
+  c.fillStyle=base;c.fillRect(x,y,w,h);                                   // полотно
+  c.strokeStyle=light;c.lineWidth=3;c.strokeRect(x+6,y+6,w-12,h-12);      // кайма
+  c.strokeStyle=dark;c.lineWidth=1.5;c.strokeRect(x+11,y+11,w-22,h-22);
+  const ix=x+16,iy=y+16,iw=w-32,ih=h-32;                                  // орнамент внутри
+  c.save();c.beginPath();c.rect(ix,iy,iw,ih);c.clip();
+  const orn=Math.floor(r()*3);
+  if(orn===0){const d=Math.min(iw,ih)*0.5;
+    for(let px=ix;px<ix+iw+d;px+=d)for(let py=iy;py<iy+ih+d;py+=d){
+      c.fillStyle=light;c.beginPath();c.moveTo(px,py-d/2);c.lineTo(px+d/2,py);c.lineTo(px,py+d/2);c.lineTo(px-d/2,py);c.closePath();c.fill();
+      c.fillStyle=dark;c.beginPath();c.moveTo(px,py-d/5);c.lineTo(px+d/5,py);c.lineTo(px,py+d/5);c.lineTo(px-d/5,py);c.closePath();c.fill();}
+  }else if(orn===1){c.fillStyle=light;const st=12;
+    if(horiz)for(let px=ix;px<ix+iw;px+=st*2)c.fillRect(px,iy,st,ih);else for(let py=iy;py<iy+ih;py+=st*2)c.fillRect(ix,py,iw,st);
+  }else{c.fillStyle=light;for(let px=ix+8;px<ix+iw;px+=16)for(let py=iy+8;py<iy+ih;py+=16){c.fillRect(px-1,py-4,2,8);c.fillRect(px-4,py-1,8,2);}}
+  c.restore();
+  c.strokeStyle=light;c.lineWidth=1.5;                                    // бахрома
+  if(horiz){for(let py=y+4;py<y+h-2;py+=5){line(c,x,py,x-FR,py);line(c,x+w,py,x+w+FR,py);}}
+  else{for(let px=x+4;px<x+w-2;px+=5){line(c,px,y,px,y-FR);line(c,px,y+h,px,y+h+FR);}}
+  c.restore();
+}
+function drawPuddle(P){
+  const{c,r}=P,w=50+r()*70,h=w*(0.5+r()*0.4),s=pickSpot(r,w,h);if(!s)return;
+  const cx=s.x+w/2,cy=s.y+h/2;c.save();
+  c.fillStyle='rgba(15,30,50,0.35)';c.strokeStyle='rgba(0,0,0,0.25)';c.lineWidth=1.5;
+  c.beginPath();c.ellipse(cx,cy,w/2,h/2,(r()-0.5)*0.6,0,Math.PI*2);c.fill();c.stroke();
+  c.fillStyle='rgba(255,255,255,0.10)';c.beginPath();c.ellipse(cx-w*0.15,cy-h*0.15,w*0.22,h*0.14,0,0,Math.PI*2);c.fill();
+  c.restore();
+}
+function drawRubble(P){
+  const{c,r}=P,s=pickSpot(r,70,70);if(!s)return;const n=5+Math.floor(r()*8);
+  c.save();c.strokeStyle='rgba(0,0,0,0.4)';c.lineWidth=1;
+  for(let i=0;i<n;i++){const x=s.x+r()*70,y=s.y+r()*70,rad=2+r()*5;
+    c.fillStyle=tone(P,r()>0.5?8:-10);c.beginPath();
+    for(let k=0;k<6;k++){const a=k/6*Math.PI*2,rr=rad*(0.7+r()*0.5);k?c.lineTo(x+Math.cos(a)*rr,y+Math.sin(a)*rr):c.moveTo(x+Math.cos(a)*rr,y+Math.sin(a)*rr);}
+    c.closePath();c.fill();c.stroke();}
+  c.restore();
+}
+function drawGrate(P){
+  const{c,r}=P,d=36+r()*20,s=pickSpot(r,d,d);if(!s)return;const cx=s.x+d/2,cy=s.y+d/2;
+  c.save();
+  c.fillStyle='#0c0c0e';c.beginPath();c.arc(cx,cy,d/2,0,Math.PI*2);c.fill();
+  c.strokeStyle='#3a3a3f';c.lineWidth=2;c.stroke();
+  c.clip();c.lineWidth=3;
+  for(let x=-d/2+5;x<d/2;x+=7)line(c,cx+x,cy-d/2,cx+x,cy+d/2);
+  c.restore();
+}
+function drawBones(P){
+  const{c,r}=P,s=pickSpot(r,60,60);if(!s)return;const n=2+Math.floor(r()*3);
+  c.save();c.lineCap='round';
+  for(let i=0;i<n;i++){const x=s.x+10+r()*40,y=s.y+10+r()*40,a=r()*Math.PI,l=12+r()*16,dx=Math.cos(a)*l/2,dy=Math.sin(a)*l/2;
+    c.strokeStyle='rgba(0,0,0,0.35)';c.lineWidth=5;line(c,x-dx+1,y-dy+2,x+dx+1,y+dy+2);
+    c.strokeStyle='#d9d2bd';c.lineWidth=3;line(c,x-dx,y-dy,x+dx,y+dy);
+    c.fillStyle='#d9d2bd';for(const[ex,ey]of[[x-dx,y-dy],[x+dx,y+dy]]){c.beginPath();c.arc(ex,ey,2.5,0,Math.PI*2);c.fill();}}
+  c.restore();
+}
+
+// ============================================================
+// B5. ГЕОМЕТРИЯ СТЕН И ДВЕРЕЙ
+//   Стены и двери, общие для двух соседних комнат, собираются в Map по координатам
+//   и рисуются ОДИН раз — иначе будут двойные тени и наложения.
+// ============================================================
+function sideSegment(x0,y0,side){ // отрезок стороны комнаты [ax,ay,bx,by]
+  switch(side){
+    case 'N':return[x0,y0,x0+S,y0];
+    case 'S':return[x0,y0+S,x0+S,y0+S];
+    case 'E':return[x0+S,y0,x0+S,y0+S];
+    case 'W':return[x0,y0,x0,y0+S];
+  }
+}
+function openingPoints(ax,ay,bx,by){ // две точки дверного проёма в середине отрезка
+  const mx=(ax+bx)/2,my=(ay+by)/2,len=Math.hypot(bx-ax,by-ay),ux=(bx-ax)/len,uy=(by-ay)/len;
+  return{p1x:mx-ux*DOOR_WIDTH/2,p1y:my-uy*DOOR_WIDTH/2,p2x:mx+ux*DOOR_WIDTH/2,p2y:my+uy*DOOR_WIDTH/2};
+}
+function addWall(map,ax,ay,bx,by,alpha,theme){
+  const key=[ax,ay,bx,by].map(Math.round).join(',');
+  const ex=map.get(key);
+  if(!ex)map.set(key,{ax,ay,bx,by,alpha,theme});
+  else if(alpha>ex.alpha){ex.alpha=alpha;ex.theme=theme;} // из двух комнат берём более светлую
+}
+function collectRoomGeometry(r,walls,doors,corners){
+  const{rx,ry,x0,y0,alpha,theme}=r;
+  for(const side of['N','S','E','W']){
+    const dt=MAP.rooms[ry][rx][side];        // 'wall' | 'locked' | всё остальное считается дверью
+    const[ax,ay,bx,by]=sideSegment(x0,y0,side);
+    if(dt==='wall'){addWall(walls,ax,ay,bx,by,alpha,theme);continue;}
+    const op=openingPoints(ax,ay,bx,by);
+    addWall(walls,ax,ay,op.p1x,op.p1y,alpha,theme);   // стена слева от проёма
+    addWall(walls,op.p2x,op.p2y,bx,by,alpha,theme);   // стена справа от проёма
+    const key=doorKey(rx,ry,side);
+    if(!doors.has(key))doors.set(key,{key,doorType:dt,alpha,theme,...op});
+    else if(alpha>doors.get(key).alpha){const d=doors.get(key);d.alpha=alpha;d.theme=theme;}
+  }
+  for(const[x,y]of[[x0,y0],[x0+S,y0],[x0,y0+S],[x0+S,y0+S]]){ // углы → колонны
+    const key=Math.round(x)+','+Math.round(y);
+    const ex=corners.get(key);
+    if(!ex)corners.set(key,{x,y,alpha,theme});
+    else if(alpha>ex.alpha){ex.alpha=alpha;ex.theme=theme;}
+  }
+}
+
+// ============================================================
+// B6. РИСОВАНИЕ СТЕН, КОЛОНН, ДВЕРЕЙ
+// ============================================================
+function drawWallBand({ax,ay,bx,by,alpha,theme}){ // стена с толщиной, кладкой, бликом и тенью
+  const horiz=Math.abs(ay-by)<0.5,half=WALL_T/2;
+  const x=Math.min(ax,bx)-(horiz?0:half),y=Math.min(ay,by)-(horiz?half:0);
+  const w=horiz?Math.abs(bx-ax):WALL_T,h=horiz?WALL_T:Math.abs(by-ay);
+  if(w<1||h<1)return;
+  const[wh,ws,wl]=theme.wall;
+  ctx.save();ctx.globalAlpha=alpha;
+  ctx.fillStyle='rgba(0,0,0,0.35)';ctx.fillRect(x+4,y+4,w,h);           // тень на пол
+  ctx.fillStyle=hsl(wh,ws,wl);ctx.fillRect(x,y,w,h);                     // тело стены
+  ctx.strokeStyle=hsl(wh,ws,Math.max(4,wl-13));ctx.lineWidth=1;           // швы кладки
+  const block=36,len=horiz?w:h;
+  if(horiz)line(ctx,x,y+half,x+w,y+half);else line(ctx,x+half,y,x+half,y+h);
+  for(let d=block/2;d<len;d+=block/2){
+    const row=Math.round(d/(block/2))%2;
+    if(horiz){row?line(ctx,x+d,y,x+d,y+half):line(ctx,x+d,y+half,x+d,y+h);}
+    else{row?line(ctx,x,y+d,x+half,y+d):line(ctx,x+half,y+d,x+w,y+d);}
+  }
+  ctx.lineWidth=2;
+  ctx.strokeStyle=hsl(wh,ws,Math.min(90,wl+16),0.9);                      // блик
+  if(horiz)line(ctx,x,y+1,x+w,y+1);else line(ctx,x+1,y,x+1,y+h);
+  ctx.strokeStyle='rgba(0,0,0,0.55)';                                     // тёмная грань
+  if(horiz)line(ctx,x,y+h-1,x+w,y+h-1);else line(ctx,x+w-1,y,x+w-1,y+h);
+  ctx.restore();
+}
+function drawPillar({x,y,alpha,theme}){
+  const p=PILLAR,hp=p/2,[wh,ws,wl]=theme.wall;
+  ctx.save();ctx.globalAlpha=alpha;
+  ctx.fillStyle='rgba(0,0,0,0.4)';ctx.fillRect(x-hp+5,y-hp+5,p,p);
+  ctx.fillStyle=hsl(wh,ws,wl+6);ctx.fillRect(x-hp,y-hp,p,p);
+  ctx.fillStyle=hsl(wh,ws,wl+14);ctx.fillRect(x-hp+5,y-hp+5,p-10,p-10);
+  ctx.strokeStyle='rgba(0,0,0,0.6)';ctx.lineWidth=1.5;ctx.strokeRect(x-hp,y-hp,p,p);
+  ctx.restore();
+}
+function drawThreshold(d){ // порог — тёмная полоска пола в проёме
+  const horiz=Math.abs(d.p1y-d.p2y)<0.5,mx=(d.p1x+d.p2x)/2,my=(d.p1y+d.p2y)/2;
+  const w=horiz?DOOR_WIDTH:WALL_T+2,h=horiz?WALL_T+2:DOOR_WIDTH,[fh,fs]=d.theme.floor;
+  ctx.save();ctx.globalAlpha=d.alpha;
+  ctx.fillStyle=hsl(fh,fs,Math.max(6,d.theme.floorL-14));ctx.fillRect(mx-w/2,my-h/2,w,h);
+  ctx.restore();
+}
+function drawJamb(x,y,theme){ // дверной косяк
+  const p=WALL_T+8,hp=p/2,[wh,ws,wl]=theme.wall;
+  ctx.fillStyle='rgba(0,0,0,0.4)';ctx.fillRect(x-hp+4,y-hp+4,p,p);
+  ctx.fillStyle=hsl(wh,ws,wl+10);ctx.fillRect(x-hp,y-hp,p,p);
+  ctx.strokeStyle='rgba(0,0,0,0.6)';ctx.lineWidth=1.5;ctx.strokeRect(x-hp,y-hp,p,p);
+}
+function drawDoorLeaf(d){ // дверное полотно; угол берётся из transition (механика открывания не тронута)
+  const{angle,swing}=doorAngleOf(d.key);
+  const{p1x:px,p1y:py,p2x,p2y,theme,alpha}=d;
+  const base=Math.atan2(p2y-py,p2x-px),rad=angle*Math.PI/180*swing;
+  locked=String(d.doorType).startsWith('locked'),lockCol=LOCK_COLORS[d.doorType]||'#c0392b';
+  ctx.save();ctx.globalAlpha=alpha;
+  drawJamb(px,py,theme);drawJamb(p2x,p2y,theme);
+  if(angle>0){ // пунктирная дуга открывания
+    ctx.strokeStyle='rgba(0,0,0,0.3)';ctx.lineWidth=2;ctx.setLineDash([4,6]);
+    ctx.beginPath();ctx.arc(px,py,DOOR_WIDTH-14,base,base+rad,swing<0);ctx.stroke();ctx.setLineDash([]);
+  }
+  ctx.translate(px,py);ctx.rotate(base+rad);
+  const x1=6,L=DOOR_WIDTH-14,T=10;
+  ctx.fillStyle='rgba(0,0,0,0.4)';ctx.fillRect(x1+2,-T/2+3,L,T);                  // тень
+  ctx.fillStyle=locked?'#5a3b25':'#8b5a2b';ctx.fillRect(x1,-T/2,L,T);            // доски
+  ctx.strokeStyle='rgba(0,0,0,0.35)';ctx.lineWidth=1;
+  for(let i=1;i<4;i++)line(ctx,x1+i*L/4,-T/2,x1+i*L/4,T/2);
+  ctx.strokeStyle='rgba(255,220,160,0.25)';line(ctx,x1,-T/2+1,x1+L,-T/2+1);       // блик
+  ctx.fillStyle=locked?lockCol:'#3a3a3a';                                        // оковка (красная у запертой)
+  ctx.fillRect(x1+L*0.12,-T/2-1,6,T+2);ctx.fillRect(x1+L*0.8,-T/2-1,6,T+2);
+  ctx.fillStyle='#d9b05a';ctx.beginPath();ctx.arc(x1+L-12,0,3,0,Math.PI*2);ctx.fill(); // ручка
+  ctx.strokeStyle='rgba(0,0,0,0.7)';ctx.lineWidth=1.5;ctx.strokeRect(x1,-T/2,L,T);
+  ctx.restore();
+  ctx.save();ctx.globalAlpha=alpha;
+  ctx.fillStyle='#1a1a1a';ctx.beginPath();ctx.arc(px,py,3.5,0,Math.PI*2);ctx.fill(); // петля
+  if(locked&&angle===0)drawPadlock((px+p2x)/2,(py+p2y)/2,lockCol);
+  ctx.restore();
+}
+function drawPadlock(x,y){
+  ctx.save();ctx.translate(x,y);
+  ctx.strokeStyle='#e8c060';ctx.lineWidth=2.5;ctx.beginPath();ctx.arc(0,-3,4.5,Math.PI,0);ctx.stroke();
+  ctx.fillStyle='#c0392b';ctx.fillRect(-6,-3,12,10);
+  ctx.strokeStyle='#300';ctx.lineWidth=1;ctx.strokeRect(-6,-3,12,10);
+  ctx.fillStyle='#300';ctx.beginPath();ctx.arc(0,1.5,1.5,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+
+// ============================================================
+// B7. СВЕТ: факелы на стенах, свет игрока, туман, зерно
+// ============================================================
+const torchCache=new Map();
+function getTorches(rx,ry){ // 0–2 факела на комнату, детерминированно
+  const key=rx+','+ry;if(torchCache.has(key))return torchCache.get(key);
+  const rng=mulberry32(roomSeed(rx,ry)^0x9e3779b9),list=[];
+  const count=rng()<0.35?0:(rng()<0.6?1:2);
+  for(let i=0;i<count;i++)list.push({side:['N','S','E','W'][Math.floor(rng()*4)],t:rng()<0.5?0.25:0.75,ph:rng()*10});
+  torchCache.set(key,list);return list;
+}
+function drawTorches(r,now){
+  for(const t of getTorches(r.rx,r.ry)){
+    const[ax,ay,bx,by]=sideSegment(r.x0,r.y0,t.side);
+    const x=ax+(bx-ax)*t.t,y=ay+(by-ay)*t.t;
+    const fl=0.85+0.15*Math.sin(now*0.012+t.ph)+0.07*Math.sin(now*0.031+t.ph*3); // мерцание
+    ctx.save();ctx.globalAlpha=r.alpha*(r.dist?LIGHT.torchNeighbor:1);
+    ctx.fillStyle='#2a2a2a';ctx.fillRect(x-3,y-3,6,6);                            // кронштейн
+    ctx.globalCompositeOperation='lighter';
+    const g=ctx.createRadialGradient(x,y,2,x,y,110*fl);
+    g.addColorStop(0,'rgba(255,170,60,0.55)');g.addColorStop(0.4,'rgba(255,120,30,0.18)');g.addColorStop(1,'rgba(255,100,0,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,110*fl,0,Math.PI*2);ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='#ffd070';ctx.beginPath();ctx.arc(x,y,4*fl,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#fff6d0';ctx.beginPath();ctx.arc(x,y,1.8,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+}
+function drawPlayerLight(now){ // тёплое пятно вокруг игрока (у фигурки — от факела)
+  const{x,y,fl}=torchPos(now);
+  ctx.save();ctx.globalCompositeOperation='lighter';
+  const R=230*fl;
+  const g=ctx.createRadialGradient(x,y,10,x,y,R);
+  g.addColorStop(0,`rgba(255,220,160,${LIGHT.playerA})`);g.addColorStop(1,'rgba(255,200,120,0)');
+  ctx.fillStyle=g;ctx.fillRect(x-R,y-R,R*2,R*2);ctx.restore();
+}
+function drawFog(){ // радиальный туман — параметры из LIGHT
+  const c=CANVAS_SIZE/2;
+  const g=ctx.createRadialGradient(c,c,ROOM_SIZE*LIGHT.inner,c,c,CANVAS_SIZE*0.7);
+  g.addColorStop(0,'rgba(4,4,12,0)');
+  g.addColorStop(LIGHT.mid,`rgba(4,4,12,${LIGHT.midA})`);
+  g.addColorStop(1,`rgba(4,4,12,${LIGHT.outerA})`);
+  ctx.fillStyle=g;ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE);
+}
+const grainPattern=(()=>{ // плёночное зерно (создаётся один раз)
+  const g=document.createElement('canvas');g.width=g.height=256;const c=g.getContext('2d');
+  const img=c.createImageData(256,256);
+  for(let i=0;i<img.data.length;i+=4){const v=Math.random()*255|0;img.data[i]=img.data[i+1]=img.data[i+2]=v;img.data[i+3]=255;}
+  c.putImageData(img,0,0);return ctx.createPattern(g,'repeat');
+})();
+function drawGrain(){
+  ctx.save();ctx.globalAlpha=0.06;ctx.globalCompositeOperation='overlay';
+  ctx.fillStyle=grainPattern;ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE);ctx.restore();
+}
+
+// ============================================================
+// B8. ПЕРСОНАЖ — три варианта, выбор через PLAYER_STYLE (см. B1)
+// ============================================================
+function torchPos(now){ // откуда исходит свет игрока
+  const cx=CANVAS_SIZE/2,cy=CANVAS_SIZE/2;
+  const fl=0.9+0.1*Math.sin(now*0.02)+0.06*Math.sin(now*0.047);
+  if(PLAYER_STYLE!=='figure')return{x:cx,y:cy,fl};
+  const hand=facing==='W'?-1:1;
+  return{x:cx+hand*13*PLAYER_SCALE,y:cy-6*PLAYER_SCALE,fl};
+}
+function drawPlayer(now){
+  if(PLAYER_STYLE==='orb')drawPlayerOrb(now);
+  else if(PLAYER_STYLE==='dot')drawPlayerDot();
+  else drawPlayerFigure(now);
+}
+// --- вариант 1: путник в плаще с факелом ---
+function drawPlayerFigure(now){
+  const cx=CANVAS_SIZE/2,cy=CANVAS_SIZE/2,k=PLAYER_SCALE;
+  const hand=facing==='W'?-1:1;                 // рука с факелом — по ходу движения
+  const bob=Math.sin(now*0.004)*0.6;            // лёгкое «дыхание»
+  const{fl}=torchPos(now);
+  const CLOAK='#4a5d7a',OUT='#0e1218';          // цвет плаща и контура — меняйте здесь
+  ctx.save();
+  ctx.translate(cx,cy);ctx.scale(k,k);
+  ctx.fillStyle='rgba(0,0,0,0.45)';                                         // тень
+  ctx.beginPath();ctx.ellipse(2,14,13,5,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=CLOAK;ctx.strokeStyle=OUT;ctx.lineWidth=2;ctx.lineJoin='round'; // плащ
+  ctx.beginPath();
+  ctx.moveTo(-8,-2+bob);ctx.quadraticCurveTo(-13,12,-11,13);
+  ctx.lineTo(11,13);ctx.quadraticCurveTo(13,12,8,-2+bob);
+  ctx.closePath();ctx.fill();ctx.stroke();
+  ctx.strokeStyle='rgba(0,0,0,0.35)';ctx.lineWidth=1.5;line(ctx,0,2,0,12);  // складка
+  ctx.strokeStyle='#5a3a1e';ctx.lineWidth=3;ctx.lineCap='round';             // рукоять факела
+  line(ctx,hand*7,4,hand*13,-3);
+  ctx.fillStyle=CLOAK;ctx.strokeStyle=OUT;ctx.lineWidth=2;                  // голова в капюшоне
+  ctx.beginPath();ctx.arc(0,-8+bob,8,0,Math.PI*2);ctx.fill();ctx.stroke();
+  if(facing!=='N'){                                                         // лицо (на север — затылок)
+    const fx=facing==='E'?2:facing==='W'?-2:0;
+    ctx.fillStyle='#e8cfa8';
+    ctx.beginPath();ctx.ellipse(fx,-6+bob,4.5,4,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#1a1a1a';
+    if(facing==='S'){ctx.fillRect(fx-2.5,-7+bob,1.5,2);ctx.fillRect(fx+1,-7+bob,1.5,2);}
+    else{ctx.fillRect(fx+hand*1.5-0.75,-7+bob,1.5,2);}
+  }
+  const tx=hand*13,ty=-6;                                                   // пламя
+  ctx.globalCompositeOperation='lighter';
+  const g=ctx.createRadialGradient(tx,ty,1,tx,ty,14*fl);
+  g.addColorStop(0,'rgba(255,190,90,0.7)');g.addColorStop(1,'rgba(255,120,30,0)');
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(tx,ty,14*fl,0,Math.PI*2);ctx.fill();
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='#ff9a2e';ctx.beginPath();ctx.ellipse(tx,ty-1,3.2,4.5*fl,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#fff1b0';ctx.beginPath();ctx.ellipse(tx,ty,1.6,2.6*fl,0,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+// --- вариант 2: светящийся шар ---
+function drawPlayerOrb(now){
+  const cx=CANVAS_SIZE/2,cy=CANVAS_SIZE/2,{fl}=torchPos(now);
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.4)';ctx.beginPath();ctx.ellipse(cx+2,cy+5,10,5,0,0,Math.PI*2);ctx.fill();
+  ctx.globalCompositeOperation='lighter';
+  const g=ctx.createRadialGradient(cx,cy,2,cx,cy,26*fl);
+  g.addColorStop(0,'rgba(255,230,170,0.9)');g.addColorStop(0.5,'rgba(255,180,80,0.35)');g.addColorStop(1,'rgba(255,140,40,0)');
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,cy,26*fl,0,Math.PI*2);ctx.fill();
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='#fff6d8';ctx.beginPath();ctx.arc(cx,cy,6,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+// --- вариант 3: простой кружок с указателем направления ---
+function drawPlayerDot(){
+  const cx=CANVAS_SIZE/2,cy=CANVAS_SIZE/2,d=DIR[facing];
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.45)';ctx.beginPath();ctx.ellipse(cx+3,cy+6,11,6,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#3b6ea5';ctx.strokeStyle='#101418';ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(cx,cy,10,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#f1d9b5';ctx.beginPath();ctx.arc(cx,cy,5.5,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#e8e2d0';ctx.beginPath();ctx.arc(cx+d.dx*8,cy+d.dy*8,3,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+
+// ============================================================
+// B9. RENDER — главная функция кадра. Порядок слоёв:
+//   пол → пороги → стены → колонны → двери → факелы →
+//   [ВАШИ монстры/предметы] → свет игрока → туман → игрок → зерно
+// ============================================================
+function render(now=performance.now()){
+  if(transition)facing=transition.dir;        // поворот персонажа по направлению движения
+
+  ctx.fillStyle='#050507';ctx.fillRect(0,0,CANVAS_SIZE,CANVAS_SIZE);
+
+  // список видимых комнат 3×3 вокруг игрока
+  const visible=[];
+  for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+    const rx=player.x+dx,ry=player.y+dy;
+    if(!inBounds(rx,ry))continue;
+    const dist=Math.abs(dx)+Math.abs(dy);      // 0 — текущая, 1 — соседняя, 2 — диагональная
+    const sx=CANVAS_SIZE/2+dx*S-visual.offsetX,sy=CANVAS_SIZE/2+dy*S-visual.offsetY;
+    visible.push({rx,ry,sx,sy,x0:sx-S/2,y0:sy-S/2,dist,alpha:LIGHT.alpha[dist],theme:roomTheme(rx,ry)});
+  }
+
+  // слой 1: пол
+  for(const r of visible){ctx.globalAlpha=r.alpha;ctx.drawImage(getRoomFloor(r.rx,r.ry),r.x0,r.y0);}
+  ctx.globalAlpha=1;
+
+  // слой 2: стены, колонны, двери, факелы
+  const walls=new Map(),doors=new Map(),corners=new Map();
+  for(const r of visible)collectRoomGeometry(r,walls,doors,corners);
+  for(const d of doors.values())drawThreshold(d);
+  for(const w of walls.values())drawWallBand(w);
+  for(const p of corners.values())drawPillar(p);
+  for(const d of doors.values())drawDoorLeaf(d);
+  for(const r of visible)drawTorches(r,now);
+
+  // слой 3: >>> МЕСТО ДЛЯ ВАШЕГО ГЕЙМПЛЕЯ <<<
+  //   Объявите в своём коде  function drawEntities(visible, now) { ... }
+  //   и рисуйте в ней монстров/предметы. Центр комнаты на экране: roomScreenPos(rx, ry).
+  //   Для затемнения в соседних комнатах: ctx.globalAlpha = LIGHT.alpha[dist].
+  if(typeof drawEntities==='function')drawEntities(visible,now);
+
+  // слой 4: свет игрока, туман, игрок, зерно
+  drawPlayerLight(now);
+  drawFog();
+  if(typeof drawEntitiesOverlay==='function')drawEntitiesOverlay(visible,now);
+  drawPlayer(now);
+  drawGrain();
+}
+
+// ############################################################################
+// #                         ДИЗАЙН — КОНЕЦ                                   #
+// ############################################################################
+
+
+
+// ############################################################################
+// #  БЛОК D. МОНСТРЫ: «Ползун» — мир, двери, повадки, две отрисовки          #
+// #  Вставлять: ПОСЛЕ «ДИЗАЙН — КОНЕЦ», ПЕРЕД startTransition.                #
+// ############################################################################
+const TAU = Math.PI*2;                                   // если в игре уже есть — удалите строку
+const caughtEl = document.getElementById('caught');      // может быть null — тогда счёт только в сообщении
+
+// ---------- D0. НАСТРОЙКИ ----------
+const DOOR_OPEN_SPEED  = 150;   // °/с — как быстро распахивается дверь
+const DOOR_CLOSE_SPEED = 40;    // °/с — как медленно закрывается: чем меньше, тем дольше «горячий след»
+const EYES_IN_DARK = 'chase';   // глаза светятся сквозь туман в чужих комнатах: 'chase' | 'always' | 'never'
+
+// ---------- D1. МИРОВЫЕ КООРДИНАТЫ (в игре у вас свои — эти для демо) ----------
+function roomCX(rx){return rx*ROOM_SIZE+ROOM_SIZE/2;}
+function roomCY(ry){return ry*ROOM_SIZE+ROOM_SIZE/2;}
+function playerWorld(){return{x:roomCX(player.x)+visual.offsetX, y:roomCY(player.y)+visual.offsetY};}
+function playerRoomForAI(){
+  const p=playerWorld();
+  return{x:Math.max(0,Math.min(MAP.w-1,Math.floor(p.x/ROOM_SIZE))), y:Math.max(0,Math.min(MAP.h-1,Math.floor(p.y/ROOM_SIZE)))};
+}
+function worldToScreen(wx,wy){const p=playerWorld();return{x:CANVAS_SIZE/2+wx-p.x, y:CANVAS_SIZE/2+wy-p.y};}
+function sideType(rx,ry,dir){return MAP.rooms[ry][rx][dir];}
+function clampToRoom(p,room,margin){
+  const x0=room.x*ROOM_SIZE+margin,y0=room.y*ROOM_SIZE+margin,x1=(room.x+1)*ROOM_SIZE-margin,y1=(room.y+1)*ROOM_SIZE-margin;
+  return{x:Math.max(x0,Math.min(x1,p.x)), y:Math.max(y0,Math.min(y1,p.y))};
+}
+function doorCenter(rx,ry,dir){return{x:roomCX(rx)+DIR[dir].dx*ROOM_SIZE/2, y:roomCY(ry)+DIR[dir].dy*ROOM_SIZE/2};}
+
+// ---------- D2. ДВЕРИ С НЕСКОЛЬКИМИ ПОЛЬЗОВАТЕЛЯМИ (игрок + монстры) ----------
+// key -> {angle, target, swing, users:Set}. Дверь закрывается медленно после ухода последнего пользователя.
+const doorAnims=new Map();
+function getAnim(key){
+  let a=doorAnims.get(key);
+  if(!a){a={angle:0,target:0,swing:1,users:new Set()};doorAnims.set(key,a);}
+  return a;
+}
+function requestDoorOpen(key,swing,user){const a=getAnim(key);if(a.users.size===0)a.swing=swing;a.users.add(user);a.target=90;}
+function releaseDoor(key,user){const a=doorAnims.get(key);if(!a)return;a.users.delete(user);if(a.users.size===0)a.target=0;}
+// Эффективный угол двери: максимум из механики игрока (transition) и общей анимации
+function doorAngleOf(key){
+  let angle=0,swing=1;
+  if(transition&&transition.doorKey===key){angle=transition.doorAngle;swing=transition.swingDir;}
+  const a=doorAnims.get(key);
+  if(a&&a.angle>angle){angle=a.angle;swing=a.swing;}
+  return{angle,swing};
+}
+function doorPassable(key){return doorAngleOf(key).angle>=70;}
+function updateDoors(dt){
+  for(const[k,a]of doorAnims){
+    if(a.angle<a.target)a.angle=Math.min(a.target,a.angle+DOOR_OPEN_SPEED*dt);
+    else if(a.angle>a.target)a.angle=Math.max(a.target,a.angle-DOOR_CLOSE_SPEED*dt);
+    if(a.angle===0&&a.target===0&&a.users.size===0)doorAnims.delete(k);
+  }
+}
+// Игрок тоже «держит» дверь, пока идёт через неё — чтобы монстр видел незакрывшуюся дверь
+let playerDoorKey=null;
+function syncPlayerDoor(){
+  if(transition&&transition.phase!=='closing'){
+    const key=transition.doorKey;
+    if(playerDoorKey!==key){if(playerDoorKey)releaseDoor(playerDoorKey,'player');playerDoorKey=key;requestDoorOpen(key,transition.swingDir,'player');}
+    const a=doorAnims.get(key);if(a&&transition.doorAngle>a.angle)a.angle=transition.doorAngle;
+  }else if(playerDoorKey){releaseDoor(playerDoorKey,'player');playerDoorKey=null;}
+}
+
+// ---------- D3. ТИПЫ МОНСТРОВ ----------
+const MONSTER_TYPES={
+  monster1:{
+    id:'monster1',
+    title:'Ползун',
+    chaseSpeed:85,
+    wanderSpeed:32,
+    size:13,
+    bodyColor:'#5a1f1f',
+    shellColor:'#8e2b2b',      // если теряется на красных полах — попробуйте '#a8402a'
+    legColor:'#3a1414',
+    eyeColor:'#ffd24a',
+    auraColor:'rgba(200,40,40,',
+    eyes:{x:1.02,y:0.24,r:0.18},   // положение глаз в долях size (общее для обеих отрисовок)
+    sightAdjacent:true,
+    sightNeedsPassage:true,
+    sightDiagonal:false,
+    noticeDoors:true,
+    canOpenDoors:true,
+    canOpenLocked:false,
+    catchRadius:20,
+    // --- ОТРИСОВКА: оставьте одну строку ---
+    draw: drawMonster1_spider,   // ваш паук (с контурами, тенью и шагом от пути)
+   //  draw: drawMonster1_beetle,   // альтернатива: жук с панцирем и усиками
+  }
+};
+
+const monsters=[];
+let caughtCount=0;
+// Для демо 5×5. В игре — ваш список SPAWNS.
+const SPAWNS=[['monster1',0,0],['monster1',4,4],['monster1',0,4]];
+
+function spawnMonster(typeId,rx,ry){
+  if(!inBounds(rx,ry))return null;
+  const cfg=MONSTER_TYPES[typeId];
+  const m={
+    cfg,home:{x:rx,y:ry},room:{x:rx,y:ry},
+    x:roomCX(rx),y:roomCY(ry),
+    facing:0,state:'idle',reason:'',targetRoom:null,cross:null,ignoreDoorKey:null,
+    wanderTarget:null,wanderWait:0,alert:0,alertMark:'!',stun:0,moving:0,
+    legPhase:0,               // фаза шага, растёт от пройденного пути
+  };
+  monsters.push(m);return m;
+}
+function resetMonsters(){
+  monsters.length=0;
+  for(const[t,x,y]of SPAWNS)spawnMonster(t,x,y);
+  for(const a of[...doorAnims.values()]){
+    for(const u of[...a.users])if(u!=='player')a.users.delete(u);
+    if(a.users.size===0)a.target=0;
+  }
+}
+resetMonsters();
+
+// ---------- D4. ПОВАДКИ (ваш код; изменены только отступы от стен) ----------
+function monsterCanPass(m,rx,ry,dir){
+  const t=sideType(rx,ry,dir);
+  if(t==='wall')return false;
+  if(String(t).startsWith('locked')&&!m.cfg.canOpenLocked)return false;
+  return true;
+}
+function isOrthAdjacent(a,b){return Math.abs(a.x-b.x)+Math.abs(a.y-b.y)===1;}
+function dirBetween(from,to){
+  for(const d of['N','S','E','W'])if(from.x+DIR[d].dx===to.x&&from.y+DIR[d].dy===to.y)return d;
+  return null;
+}
+function bfsNextDir(m,from,to){
+  if(from.x===to.x&&from.y===to.y)return null;
+  const idx=(x,y)=>y*MAP.w+x;
+  const prev=new Map(),seen=new Set([idx(from.x,from.y)]),q=[{x:from.x,y:from.y}];
+  while(q.length){
+    const cur=q.shift();
+    for(const d of['N','S','E','W']){
+      if(!monsterCanPass(m,cur.x,cur.y,d))continue;
+      const nx=cur.x+DIR[d].dx,ny=cur.y+DIR[d].dy;
+      if(!inBounds(nx,ny))continue;
+      const k=idx(nx,ny);if(seen.has(k))continue;
+      seen.add(k);prev.set(k,{x:cur.x,y:cur.y,d});
+      if(nx===to.x&&ny===to.y){
+        let cx=nx,cy=ny;
+        for(;;){const p=prev.get(idx(cx,cy));if(p.x===from.x&&p.y===from.y)return p.d;cx=p.x;cy=p.y;}
+      }
+      q.push({x:nx,y:ny});
+    }
+  }
+  return null;
+}
+function setChase(m,room,reason,mark){
+  if(m.state!=='chase'){m.alert=1.4;m.alertMark=mark;}
+  m.state='chase';m.reason=reason;m.targetRoom={x:room.x,y:room.y};m.wanderTarget=null;m.wanderWait=0;
+}
+function updateMonsterSenses(m){
+  if(m.stun>0)return;
+  const cfg=m.cfg,pr=playerRoomForAI();
+  if(pr.x===m.room.x&&pr.y===m.room.y){setChase(m,pr,'sight','!');return true;}
+  if(cfg.sightAdjacent&&isOrthAdjacent(m.room,pr)){
+    const d=dirBetween(m.room,pr);
+    if(!cfg.sightNeedsPassage||monsterCanPass(m,m.room.x,m.room.y,d)){setChase(m,pr,'sight','!');return true;}
+  }
+  return false;
+}
+function onMonsterEnterRoom(m){
+  if(!m.cfg.noticeDoors)return;
+  let best=null,bestAngle=0;
+  for(const d of['N','S','E','W']){
+    if(!monsterCanPass(m,m.room.x,m.room.y,d))continue;
+    const key=doorKey(m.room.x,m.room.y,d);
+    if(key===m.ignoreDoorKey)continue;
+    const a=doorAnims.get(key);
+    if(!a||a.users.has(m))continue;
+    const abs=Math.abs(a.angle);
+    if(abs>bestAngle){bestAngle=abs;best=d;}
+  }
+  if(best)setChase(m,{x:m.room.x+DIR[best].dx,y:m.room.y+DIR[best].dy},'trail','?');
+}
+function moveToward(m,tx,ty,speed,dt){
+  const dx=tx-m.x,dy=ty-m.y,dist=Math.hypot(dx,dy);
+  if(dist<0.5){m.moving=0;return true;}
+  const step=Math.min(speed*dt,dist);
+  m.x+=dx/dist*step;m.y+=dy/dist*step;m.moving=speed;
+  const want=Math.atan2(dy,dx);let diff=want-m.facing;
+  while(diff>Math.PI)diff-=TAU;while(diff<-Math.PI)diff+=TAU;
+  m.facing+=diff*Math.min(1,dt*8);
+  return step>=dist;
+}
+function updateMonster(m,dt){
+  const cfg=m.cfg;
+  m.legPhase+=(m.moving||0)*dt*0.16;              // шаг ног — от пройденного пути
+  if(m.alert>0)m.alert-=dt;
+  if(m.stun>0){m.stun-=dt;m.moving=0;return;}
+  updateMonsterSenses(m);
+
+  if(m.cross){
+    const cr=m.cross,dc=doorCenter(cr.from.x,cr.from.y,cr.dir);
+    if(!cr.entered&&m.targetRoom&&m.targetRoom.x===cr.from.x&&m.targetRoom.y===cr.from.y){
+      releaseDoor(cr.key,m);m.cross=null;return;
+    }
+    if(cr.stage==='approach'){
+      const dist=Math.hypot(dc.x-m.x,dc.y-m.y);
+      if(cfg.canOpenDoors&&dist<ROOM_SIZE*0.45&&!cr.requested){requestDoorOpen(cr.key,SWING_BY_DIR[cr.dir],m);cr.requested=true;}
+      if(moveToward(m,dc.x,dc.y,cfg.chaseSpeed,dt)){if(doorPassable(cr.key))cr.stage='pass';else m.moving=0;}
+      return;
+    }
+    const ex=dc.x+DIR[cr.dir].dx*ROOM_SIZE*0.42,ey=dc.y+DIR[cr.dir].dy*ROOM_SIZE*0.42;
+    const done=moveToward(m,ex,ey,cfg.chaseSpeed,dt);
+    if(!cr.entered){
+      const axisSgn=DIR[cr.dir].dx+DIR[cr.dir].dy;
+      const along=(DIR[cr.dir].dx!==0)?(m.x-dc.x):(m.y-dc.y);
+      if(along*axisSgn>0){
+        cr.entered=true;m.room={x:cr.to.x,y:cr.to.y};m.ignoreDoorKey=cr.key;
+        if(!updateMonsterSenses(m))onMonsterEnterRoom(m);
+      }
+    }
+    if(done){releaseDoor(cr.key,m);m.cross=null;}
+    return;
+  }
+
+  const pr=playerRoomForAI();
+  if(pr.x===m.room.x&&pr.y===m.room.y){
+    const p=playerWorld(),t=clampToRoom(p,m.room,20);   // 20 — чтобы тело не залезало на кладку
+    moveToward(m,t.x,t.y,cfg.chaseSpeed,dt);
+    if(Math.hypot(p.x-m.x,p.y-m.y)<cfg.catchRadius)onCatch(m);
+    return;
+  }
+  if(m.targetRoom&&(m.targetRoom.x!==m.room.x||m.targetRoom.y!==m.room.y)){
+    const d=bfsNextDir(m,m.room,m.targetRoom);
+    if(d){
+      m.cross={key:doorKey(m.room.x,m.room.y,d),dir:d,from:{x:m.room.x,y:m.room.y},
+        to:{x:m.room.x+DIR[d].dx,y:m.room.y+DIR[d].dy},stage:'approach',requested:false,entered:false};
+      return;
+    }
+    m.targetRoom=null;
+  }
+  m.state='idle';m.reason='';m.targetRoom=null;m.ignoreDoorKey=null;
+  if(m.wanderWait>0){m.wanderWait-=dt;m.moving=0;return;}
+  if(!m.wanderTarget){
+    const mg=ROOM_SIZE*0.5-46;                      // было 34: новые стены толще
+    m.wanderTarget={x:roomCX(m.room.x)+(Math.random()*2-1)*mg,y:roomCY(m.room.y)+(Math.random()*2-1)*mg};
+  }
+  if(moveToward(m,m.wanderTarget.x,m.wanderTarget.y,cfg.wanderSpeed,dt)){m.wanderTarget=null;m.wanderWait=0.4+Math.random()*1.6;}
+}
+function onCatch(m){
+  caughtCount++;
+  if(caughtEl)caughtEl.textContent=caughtCount;
+  flashMessage('Монстр вас настиг! ('+caughtCount+')');
+  if(m.cross)releaseDoor(m.cross.key,m);
+  m.cross=null;m.room={x:m.home.x,y:m.home.y};m.x=roomCX(m.home.x);m.y=roomCY(m.home.y);
+  m.state='idle';m.reason='';m.targetRoom=null;m.wanderTarget=null;m.ignoreDoorKey=null;
+  m.stun=2.0;m.alert=0;
+}
+// вызывается из loop()
+function updateMonsters(dt){
+  syncPlayerDoor();
+  updateDoors(dt);
+  for(const m of monsters)updateMonster(m,dt);
+}
+
+// ---------- D5. ОТРИСОВКА — общая часть ----------
+// render() блока дизайна сам вызовет drawEntities (под туманом) и drawEntitiesOverlay (над туманом)
+function drawMonstersLayer(visible,now){for(const m of monsters)drawMonster(m,visible,now);}
+function drawEntitiesOverlay(visible,now){
+  if(EYES_IN_DARK==='never')return;
+  for(const m of monsters){
+    if(m.stun>0)continue;
+    if(EYES_IN_DARK==='chase'&&m.state!=='chase')continue;
+    const r=visible.find(v=>v.rx===m.room.x&&v.ry===m.room.y);
+    if(!r||r.dist===0)continue;                   // в текущей комнате и так видно
+    const{x,y}=worldToScreen(m.x,m.y);
+    drawMonsterEyes(m,x,y,1,now/1000,true);
+  }
+}
+function drawMonster(m,visible,now){
+  const r=visible.find(v=>v.rx===m.room.x&&v.ry===m.room.y);if(!r)return;
+  const{x:px,y:py}=worldToScreen(m.x,m.y);
+  if(px<-60||py<-60||px>CANVAS_SIZE+60||py>CANVAS_SIZE+60)return;
+  const time=now/1000,R=m.cfg.size;
+  const fade=m.stun>1.6?(2-m.stun)/0.4:1;         // плавное появление после респауна
+  const alpha=r.alpha*fade;
+  m.cfg.draw(m,px,py,alpha,time);
+
+  if(m.stun>0){                                   // звёздочки над оглушённым
+    ctx.save();ctx.globalAlpha=alpha;ctx.fillStyle='#ffe680';
+    for(let i=0;i<3;i++){const a=time*5+i*TAU/3;ctx.beginPath();ctx.arc(px+Math.cos(a)*R*1.1,py-R*1.7+Math.sin(a)*4,2.2,0,TAU);ctx.fill();}
+    ctx.restore();
+  }
+  if(m.alert>0){                                  // пузырёк «!» / «?»
+    const pop=Math.min(1,(1.4-m.alert)/0.25),sc=1.35-0.35*pop,fa=Math.min(1,m.alert/0.3);
+    ctx.save();ctx.globalAlpha=alpha*fa;ctx.translate(px,py-R*2.6);ctx.scale(sc,sc);
+    ctx.fillStyle='#f4f0e6';ctx.strokeStyle='#111';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.arc(0,0,10,0,TAU);ctx.fill();ctx.stroke();
+    ctx.fillStyle=m.alertMark==='!'?'#c0392b':'#b8860b';
+    ctx.font='bold 15px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(m.alertMark,0,1);
+    ctx.restore();
+  }
+}
+function drawAura(m,px,py,time){
+  const cfg=m.cfg,R=cfg.size,pulse=0.35+0.15*Math.sin(time*6);
+  const g=ctx.createRadialGradient(px,py,R*0.5,px,py,R*3.4);
+  g.addColorStop(0,cfg.auraColor+(0.30*pulse)+')');g.addColorStop(1,cfg.auraColor+'0)');
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(px,py,R*3.4,0,TAU);ctx.fill();
+}
+// Глаза. overlay=true — светящийся режим поверх тумана
+function drawMonsterEyes(m,px,py,alpha,time,overlay){
+  const cfg=m.cfg,R=cfg.size,E=cfg.eyes,chasing=m.state==='chase'&&m.stun<=0;
+  const ex=R*E.x,ey=R*E.y,er=R*E.r*(chasing?1.25:1);
+  const blink=!chasing&&m.stun<=0&&((time+m.home.x*0.7+m.home.y*1.3)%4.2)<0.12;  // редкое моргание
+  ctx.save();ctx.globalAlpha=alpha;ctx.translate(px,py);ctx.rotate(m.facing);
+  if(m.stun>0||blink){
+    ctx.strokeStyle='#111';ctx.lineWidth=1.5;
+    for(const s of[-1,1]){ctx.beginPath();ctx.moveTo(ex-2.5,s*ey);ctx.lineTo(ex+2.5,s*ey);ctx.stroke();}
+    ctx.restore();return;
+  }
+  if(overlay){
+    ctx.globalCompositeOperation='lighter';
+    for(const s of[-1,1]){
+      const g=ctx.createRadialGradient(ex,s*ey,0.5,ex,s*ey,er*4);
+      g.addColorStop(0,'rgba(255,210,74,0.85)');g.addColorStop(1,'rgba(255,210,74,0)');
+      ctx.fillStyle=g;ctx.beginPath();ctx.arc(ex,s*ey,er*4,0,TAU);ctx.fill();
+    }
+    ctx.globalCompositeOperation='source-over';
+  }
+  if(!chasing)ctx.globalAlpha*=0.8;
+  for(const s of[-1,1]){
+    ctx.fillStyle=cfg.eyeColor;ctx.beginPath();ctx.arc(ex,s*ey,er,0,TAU);ctx.fill();
+    ctx.fillStyle='#1a0a00';ctx.beginPath();ctx.arc(ex+0.6,s*ey,er*0.45,0,TAU);ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------- D6a. ВАРИАНТ 1: ПАУК (ваш, доработанный) ----------
+function drawMonster1_spider(m,px,py,alpha,time){
+  const cfg=m.cfg,R=cfg.size,chasing=m.state==='chase'&&m.stun<=0;
+  ctx.save();ctx.globalAlpha=alpha;
+  if(chasing)drawAura(m,px,py,time);
+  // тень — ДО поворота, чтобы лежала в одну сторону со всем остальным
+  ctx.fillStyle='rgba(0,0,0,0.4)';
+  ctx.beginPath();ctx.ellipse(px+2,py+4,R*1.35,R*1.1,0,0,TAU);ctx.fill();
+
+  ctx.translate(px,py);ctx.rotate(m.facing);
+  // шаг — от пройденного пути; на месте лишь чуть переминается
+  const gait=m.legPhase+(m.moving>1?0:time*1.5);
+  ctx.lineCap='round';ctx.lineJoin='round';
+  for(const pass of[0,1]){                          // 0 — тёмная подложка ног, 1 — сами ноги
+    ctx.strokeStyle=pass?cfg.legColor:'rgba(0,0,0,0.45)';ctx.lineWidth=pass?2.6:4.6;
+    for(const sgn of[-1,1])for(let i=0;i<3;i++){
+      const base=sgn*(0.75+i*0.72),ph=Math.sin(gait+i*1.25+(sgn>0?Math.PI:0))*0.26,a=base+ph;
+      const kx=Math.cos(a)*R*1.2,ky=Math.sin(a)*R*1.2;
+      const fx=Math.cos(a+sgn*0.45)*R*2.1,fy=Math.sin(a+sgn*0.45)*R*2.1;
+      ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(kx,ky);ctx.lineTo(fx,fy);ctx.stroke();
+    }
+  }
+  // тело с контуром
+  ctx.strokeStyle='#120606';ctx.lineWidth=2;
+  ctx.fillStyle=cfg.bodyColor;
+  ctx.beginPath();ctx.ellipse(-R*0.25,0,R*1.05,R*0.85,0,0,TAU);ctx.fill();ctx.stroke();
+  // панцирь с бликом
+  ctx.fillStyle=cfg.shellColor;
+  ctx.beginPath();ctx.ellipse(-R*0.15,0,R*0.72,R*0.58,0,0,TAU);ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,0.12)';
+  ctx.beginPath();ctx.ellipse(-R*0.3,-R*0.2,R*0.35,R*0.18,0,0,TAU);ctx.fill();
+  // голова
+  ctx.fillStyle=cfg.bodyColor;
+  ctx.beginPath();ctx.arc(R*0.85,0,R*0.52,0,TAU);ctx.fill();ctx.stroke();
+  // жвалы
+  ctx.strokeStyle=cfg.legColor;ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(R*1.15,-R*0.28);ctx.lineTo(R*1.6,-R*0.12);
+  ctx.moveTo(R*1.15, R*0.28);ctx.lineTo(R*1.6, R*0.12);
+  ctx.stroke();
+  ctx.restore();
+  drawMonsterEyes(m,px,py,alpha,time,false);
+}
+
+// ---------- D6b. ВАРИАНТ 2: ЖУК (альтернатива) ----------
+function drawMonster1_beetle(m,px,py,alpha,time){
+  const cfg=m.cfg,R=cfg.size,chasing=m.state==='chase'&&m.stun<=0;
+  ctx.save();ctx.globalAlpha=alpha;
+  if(chasing)drawAura(m,px,py,time);
+  ctx.fillStyle='rgba(0,0,0,0.45)';
+  ctx.beginPath();ctx.ellipse(px+3,py+4,R*1.3,R*0.9,0,0,TAU);ctx.fill();
+
+  ctx.translate(px,py);ctx.rotate(m.facing);
+  // ноги: три пары по бокам тела, соседние пары в противофазе
+  ctx.strokeStyle=cfg.legColor;ctx.lineWidth=3;ctx.lineCap='round';ctx.lineJoin='round';
+  for(let i=0;i<3;i++){
+    const bx=(1-i)*R*0.55,ph=m.legPhase+(i&1?Math.PI:0);
+    for(const s of[-1,1]){
+      const sw=Math.sin(ph+(s>0?0:Math.PI))*R*0.45;
+      ctx.beginPath();ctx.moveTo(bx*0.6,s*R*0.5);ctx.lineTo(bx+sw*0.5,s*R*1.1);ctx.lineTo(bx+sw,s*R*1.6);ctx.stroke();
+    }
+  }
+  // тело
+  ctx.fillStyle=cfg.bodyColor;ctx.strokeStyle='#120606';ctx.lineWidth=2;
+  ctx.beginPath();ctx.ellipse(-R*0.2,0,R*1.15,R*0.85,0,0,TAU);ctx.fill();ctx.stroke();
+  // панцирь: сегменты и блик
+  ctx.fillStyle=cfg.shellColor;
+  ctx.beginPath();ctx.ellipse(-R*0.3,0,R*0.85,R*0.65,0,0,TAU);ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,0.4)';ctx.lineWidth=1.2;
+  for(let i=-1;i<=1;i++){const x=-R*0.3+i*R*0.4;ctx.beginPath();ctx.moveTo(x,-R*0.6);ctx.quadraticCurveTo(x-R*0.15,0,x,R*0.6);ctx.stroke();}
+  ctx.fillStyle='rgba(255,255,255,0.12)';
+  ctx.beginPath();ctx.ellipse(-R*0.5,-R*0.25,R*0.4,R*0.2,0,0,TAU);ctx.fill();
+  // голова
+  ctx.fillStyle=cfg.bodyColor;ctx.strokeStyle='#120606';ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(R*0.85,0,R*0.52,0,TAU);ctx.fill();ctx.stroke();
+  // усики
+  ctx.strokeStyle=cfg.legColor;ctx.lineWidth=1.5;
+  const wig=Math.sin(time*8)*0.15;
+  for(const s of[-1,1]){ctx.beginPath();ctx.moveTo(R*1.2,s*R*0.2);ctx.quadraticCurveTo(R*1.8,s*R*(0.5+wig),R*2.0,s*R*0.9);ctx.stroke();}
+  ctx.restore();
+  drawMonsterEyes(m,px,py,alpha,time,false);
+}
+// ############################################################################
+// #                         КОНЕЦ БЛОКА D                                    #
+// ############################################################################
+
+
+
+// ############################################################################
+// #  БЛОК E. Глаза без ореола + «Страж» (охотник) + «Хозяин лабиринта» (босс) #
+// #  Вставлять: ПОСЛЕ «КОНЕЦ БЛОКА D», ПЕРЕД startTransition.                 #
+// #  Из блока D удалить старые drawMonsterEyes и drawEntitiesOverlay.         #
+// ############################################################################
+
+// ---------- E1. ГЛАЗА (общие для всех монстров) ----------
+const EYE_HOT='#ff3a2a';
+// Для «прямостоящих» (upright) монстров: куда повёрнуты рука и лицо
+function uprightFacing(m){
+  const c=Math.cos(m.facing),s=Math.sin(m.facing);
+  return{hand:c>=0?1:-1, showFace:s>-0.55, shift:Math.abs(c)>0.5?(c>=0?1:-1)*m.cfg.size*0.18:0};
+}
+// Позиции двух глаз относительно центра монстра (уже с учётом поворота / стороны взгляда)
+function eyeGeometry(m){
+  const cfg=m.cfg,R=cfg.size,E=cfg.eyes;
+  if(cfg.upright){
+    const u=uprightFacing(m);if(!u.showFace)return null;      // смотрит на север — затылок
+    const o=m._eyeOff||{x:0,y:0};
+    return{pts:[{x:o.x+u.shift-R*E.y,y:o.y+R*E.x},{x:o.x+u.shift+R*E.y,y:o.y+R*E.x}],lid:{x:1,y:0}};
+  }
+  const c=Math.cos(m.facing),s=Math.sin(m.facing),pts=[];
+  for(const sg of[-1,1]){const lx=R*E.x,ly=sg*R*E.y;pts.push({x:lx*c-ly*s,y:lx*s+ly*c});}
+  return{pts,lid:{x:c,y:s}};
+}
+function drawMonsterEyes(m,px,py,alpha,time){
+  const cfg=m.cfg,R=cfg.size,E=cfg.eyes;
+  const hot=(m.state==='chase'||cfg.eyesAlwaysHot)&&m.stun<=0;
+  const g=eyeGeometry(m);if(!g)return;
+  const er=R*E.r*(hot?1.15:1);
+  const blink=!hot&&m.stun<=0&&((time+m.home.x*0.7+m.home.y*1.3)%4.2)<0.12;
+  ctx.save();ctx.globalAlpha=alpha;ctx.translate(px,py);
+  if(m.stun>0||blink){                                          // закрытые
+    ctx.strokeStyle='#111';ctx.lineWidth=1.5;
+    for(const p of g.pts){ctx.beginPath();ctx.moveTo(p.x-g.lid.x*er*1.3,p.y-g.lid.y*er*1.3);ctx.lineTo(p.x+g.lid.x*er*1.3,p.y+g.lid.y*er*1.3);ctx.stroke();}
+    ctx.restore();return;
+  }
+  for(const p of g.pts){
+    if(hot){                                                    // горят: красная точка со светлой сердцевиной, без ореола
+      ctx.fillStyle=cfg.eyeHotColor||EYE_HOT;ctx.beginPath();ctx.arc(p.x,p.y,er,0,TAU);ctx.fill();
+      ctx.fillStyle='rgba(255,210,190,0.7)';ctx.beginPath();ctx.arc(p.x,p.y,er*0.4,0,TAU);ctx.fill();
+    }else{                                                      // покой: цвет по конфигу + зрачок
+      ctx.globalAlpha=alpha*0.85;
+      ctx.fillStyle=cfg.eyeColor;ctx.beginPath();ctx.arc(p.x,p.y,er,0,TAU);ctx.fill();
+      ctx.fillStyle='#1a0a00';ctx.beginPath();ctx.arc(p.x+g.lid.x*0.6,p.y+g.lid.y*0.6,er*0.45,0,TAU);ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+// Поверх тумана — во ВСЕХ комнатах одинаково (поэтому при входе в комнату игрока ничего не «мигает»)
+function drawMonsterEyesOverlay(visible,now){
+  if(EYES_IN_DARK==='never')return;
+  for(const m of monsters){
+    if(m.stun>0)continue;
+    const hot=m.state==='chase'||m.cfg.eyesAlwaysHot;
+    if(EYES_IN_DARK==='chase'&&!hot)continue;
+    const r=visible.find(v=>v.rx===m.room.x&&v.ry===m.room.y);if(!r)continue;
+    const{x,y}=worldToScreen(m.x,m.y);
+    drawMonsterEyes(m,x,y,1,now/1000);
+  }
+}
+
+
+// ############################################################################
+// #                         КОНЕЦ БЛОКА E                                    #
+// ############################################################################
+
+
+
+// ############################################################################
+// #  БЛОК F. Плоские монстры (вид сверху): «Ящер» и «Хозяин лабиринта» (бык)  #
+// #  Вставлять после E1 (глаза), вместо удалённых E2–E4.                      #
+// ############################################################################
+
+// ---------- F1. КОНФИГИ (повадки — временно от Ползуна, для превью) ----------
+MONSTER_TYPES.monster2={
+  id:'monster2', title:'Ящер',
+  chaseSpeed:95, wanderSpeed:40, size:18, top:1.4,
+  bodyColor:'#3f5a2e', backColor:'#2d4321', bellyColor:'#6d7a4a', legColor:'#33482a',
+  eyeColor:'#e8d45a', eyeHotColor:EYE_HOT,
+  auraColor:'rgba(120,180,60,',
+  eyes:{x:1.2,y:0.36,r:0.13},
+  sightAdjacent:true, sightNeedsPassage:true, sightDiagonal:false,
+  noticeDoors:true, canOpenDoors:true, canOpenLocked:false,
+  catchRadius:26,
+  draw:drawMonster2_lizard,
+};
+MONSTER_TYPES.monster3={
+  id:'monster3', title:'Хозяин лабиринта',
+  chaseSpeed:70, wanderSpeed:0, size:24, top:1.6,
+  eyeColor:EYE_HOT, eyeHotColor:EYE_HOT, eyesAlwaysHot:true,
+  auraColor:'rgba(160,20,20,',
+  eyes:{x:1.55,y:0.3,r:0.11},
+  sightAdjacent:false, sightNeedsPassage:true, sightDiagonal:false,  // для превью стоит, пока не войдёшь
+  noticeDoors:true, canOpenDoors:true, canOpenLocked:true,
+  catchRadius:38,
+  // --- ОБЛИК БОССА: оставьте одну строку ---
+  draw:drawMonster3_bull,            // бык — плоский, вид строго сверху
+  // draw:drawMonster3_minotaurTop,  // минотавр в рост, «почти сверху»
+};
+SPAWNS.push(['monster2',4,0],['monster3',2,0]);
+resetMonsters();
+document.addEventListener('keydown',e=>{if(e.key==='r'||e.key==='R'||e.key==='к'||e.key==='К'){resetMonsters();flashMessage('Монстры сброшены');}});
+
+// общая тень для плоских монстров: рисуется в повёрнутых координатах со сдвигом вправо-вниз
+function flatShadow(px,py,facing,rx,ry,ox=0){
+  ctx.save();ctx.translate(px+3,py+4);ctx.rotate(facing);
+  ctx.fillStyle='rgba(0,0,0,0.45)';ctx.beginPath();ctx.ellipse(ox,0,rx,ry,0,0,TAU);ctx.fill();
+  ctx.restore();
+}
+
+// ---------- F2. «ЯЩЕР»: крокодилоподобный, бронированная спина, зубастая морда ----------
+function drawMonster2_lizard(m,px,py,alpha,time){
+  const cfg=m.cfg,R=cfg.size,chasing=m.state==='chase'&&m.stun<=0,walking=m.moving>1;
+  const ph=m.legPhase;
+  const tph=walking?ph*1.1:time*1.6;                       // фаза виляния хвоста
+  const tamp=walking?R*0.32:R*0.12;
+  ctx.save();ctx.globalAlpha=alpha;
+  if(chasing)drawAura(m,px,py,time);
+  flatShadow(px,py,m.facing,R*2.4,R*0.9,-R*0.3);
+  ctx.translate(px,py);ctx.rotate(m.facing);
+  ctx.lineCap='round';ctx.lineJoin='round';
+
+  // хвост: 7 сужающихся сегментов, волна бежит от тела к кончику
+  const T=[];for(let i=0;i<=7;i++)T.push({x:-R*0.9-i*R*0.36,y:Math.sin(tph-i*0.55)*tamp*(i/7+0.1)});
+  for(const pass of[0,1]){
+    for(let i=0;i<7;i++){
+      const w=R*0.62*(1-i/8);
+      ctx.strokeStyle=pass?cfg.bodyColor:'#101a0c';ctx.lineWidth=pass?w:w+3;
+      line(ctx,T[i].x,T[i].y,T[i+1].x,T[i+1].y);
+    }
+  }
+  ctx.strokeStyle=cfg.backColor;ctx.lineWidth=2;                                 // гребень на хвосте
+  for(let i=0;i<6;i++){const a=T[i],b=T[i+1];line(ctx,(a.x+b.x)/2,(a.y+b.y)/2-1.5,(a.x+b.x)/2,(a.y+b.y)/2+1.5);}
+
+  // лапы: 4, враскоряку; диагональная походка (перед-лево = зад-право)
+  for(const pass of[0,1]){
+    ctx.strokeStyle=pass?cfg.legColor:'#101a0c';ctx.lineWidth=pass?4:7;
+    for(const bx of[R*0.6,-R*0.55])for(const s of[-1,1]){
+      const p=ph+((bx>0)===(s>0)?0:Math.PI);
+      const sw=Math.sin(p)*R*0.42,lift=Math.max(0,Math.cos(p))*R*0.08;
+      const kx=bx+sw*0.4,ky=s*(R*1.0-lift),fx=bx+sw,fy=s*R*1.35;
+      ctx.beginPath();ctx.moveTo(bx*0.8,s*R*0.5);ctx.lineTo(kx,ky);ctx.lineTo(fx,fy);ctx.stroke();
+      if(pass)for(const t of[-1,0,1]){ctx.lineWidth=2;line(ctx,fx,fy,fx+R*0.16+t*R*0.06,fy+s*R*0.2+t*R*0.14);ctx.lineWidth=4;}
+    }
+  }
+
+  // туловище
+  ctx.fillStyle=cfg.bodyColor;ctx.strokeStyle='#101a0c';ctx.lineWidth=2;
+  ctx.beginPath();ctx.ellipse(0,0,R*1.2,R*0.66,0,0,TAU);ctx.fill();ctx.stroke();
+  // щитки: три ряда бугорков
+  ctx.fillStyle=cfg.backColor;
+  for(const row of[-1,0,1])for(let i=-3;i<=3;i++){
+    const x=i*R*0.3+(row?R*0.15:0),y=row*R*0.32;
+    if(Math.abs(x)>R*1.05)continue;
+    ctx.beginPath();ctx.ellipse(x,y,R*0.11,R*0.08,0,0,TAU);ctx.fill();
+  }
+  ctx.fillStyle='rgba(255,255,255,0.08)';ctx.beginPath();ctx.ellipse(-R*0.2,-R*0.22,R*0.7,R*0.16,0,0,TAU);ctx.fill();
+
+  // голова: расширяется от шеи, широкая морда
+  ctx.fillStyle=cfg.bodyColor;ctx.strokeStyle='#101a0c';ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(R*0.85,-R*0.55);ctx.lineTo(R*1.5,-R*0.5);ctx.quadraticCurveTo(R*2.2,-R*0.42,R*2.3,-R*0.15);
+  ctx.lineTo(R*2.3,R*0.15);ctx.quadraticCurveTo(R*2.2,R*0.42,R*1.5,R*0.5);ctx.lineTo(R*0.85,R*0.55);ctx.closePath();
+  ctx.fill();ctx.stroke();
+  // зубы по краям пасти
+  ctx.fillStyle='#e9e3c8';
+  for(let i=0;i<5;i++){const x=R*(1.45+i*0.18);for(const s of[-1,1]){
+    const yy=s*(R*0.5-i*0.02*R);ctx.beginPath();ctx.moveTo(x,yy);ctx.lineTo(x+R*0.07,yy+s*R*0.12);ctx.lineTo(x+R*0.14,yy);ctx.closePath();ctx.fill();}}
+  // ноздри и глаза-бугорки
+  ctx.fillStyle='#101a0c';for(const s of[-1,1]){ctx.beginPath();ctx.ellipse(R*2.15,s*R*0.12,R*0.045,R*0.07,0,0,TAU);ctx.fill();}
+  ctx.fillStyle=cfg.backColor;ctx.strokeStyle='#101a0c';ctx.lineWidth=1.5;
+  for(const s of[-1,1]){ctx.beginPath();ctx.arc(R*1.2,s*R*0.36,R*0.2,0,TAU);ctx.fill();ctx.stroke();}
+  ctx.restore();
+  drawMonsterEyes(m,px,py,alpha,time);
+}
+
+// ---------- F3. «ХОЗЯИН ЛАБИРИНТА» — вариант А: бык, вид строго сверху ----------
+function drawGlyph(cx,cy,r){ // квадратная спираль — клеймо
+  ctx.beginPath();let x=cx-r,y=cy-r,len=2*r,dir=0;ctx.moveTo(x,y);
+  for(let i=0;i<7;i++){const d=[[1,0],[0,1],[-1,0],[0,-1]][dir];x+=d[0]*len;y+=d[1]*len;ctx.lineTo(x,y);if(i%2===1)len-=r*0.5;dir=(dir+1)%4;}
+  ctx.stroke();
+}
+function drawMonster3_bull(m,px,py,alpha,time){
+  const cfg=m.cfg,R=cfg.size,chasing=m.state==='chase'&&m.stun<=0,walking=m.moving>1;
+  const ph=m.legPhase*0.8;
+  ctx.save();ctx.globalAlpha=alpha;
+  if(chasing)drawAura(m,px,py,time);
+  flatShadow(px,py,m.facing,R*2.0,R*1.15,R*0.2);
+  ctx.translate(px,py);ctx.rotate(m.facing);
+  ctx.lineCap='round';ctx.lineJoin='round';
+
+  // пыль из-под копыт
+  if(walking){ctx.fillStyle='rgba(150,130,100,0.22)';
+    for(const s of[-1,1]){const k=(Math.sin(ph+(s>0?0:Math.PI))+1)/2;ctx.beginPath();ctx.arc(-R*1.0-k*R*0.5,s*R*0.85,R*0.12+k*R*0.28,0,TAU);ctx.fill();}}
+  // хвост с кисточкой
+  const tw=Math.sin(time*2.2+m.home.x)*R*0.25;
+  ctx.strokeStyle='#1a100a';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(-R*1.3,0);ctx.quadraticCurveTo(-R*1.9,tw*0.5,-R*2.2,tw);ctx.stroke();
+  ctx.fillStyle='#1a100a';ctx.beginPath();ctx.ellipse(-R*2.25,tw,R*0.18,R*0.12,0,0,TAU);ctx.fill();
+  // копыта (видны из-под туши), шаг по диагонали
+  ctx.fillStyle='#120c08';ctx.strokeStyle='#050302';ctx.lineWidth=1.5;
+  for(const bx of[R*0.75,-R*0.85])for(const s of[-1,1]){
+    const p=ph+((bx>0)===(s>0)?0:Math.PI),sw=walking?Math.sin(p)*R*0.3:0;
+    ctx.beginPath();ctx.ellipse(bx+sw,s*R*0.98,R*0.22,R*0.16,0,0,TAU);ctx.fill();ctx.stroke();
+  }
+  // туша
+  ctx.fillStyle='#3b2418';ctx.strokeStyle='#0d0806';ctx.lineWidth=2.5;
+  ctx.beginPath();ctx.ellipse(-R*0.15,0,R*1.35,R*0.95,0,0,TAU);ctx.fill();ctx.stroke();
+  // горб на плечах
+  ctx.fillStyle='#2e1a10';ctx.beginPath();ctx.ellipse(R*0.45,0,R*0.6,R*0.85,0,0,TAU);ctx.fill();
+  // шерсть — штрихи вдоль спины
+  ctx.strokeStyle='rgba(0,0,0,0.35)';ctx.lineWidth=1.5;
+  for(let i=0;i<9;i++)for(const s of[-1,1]){const x=-R*1.2+i*R*0.28;line(ctx,x,s*R*0.25,x-R*0.12,s*R*0.7);}
+  ctx.strokeStyle='rgba(255,255,255,0.07)';ctx.lineWidth=R*0.25;line(ctx,-R*1.1,-R*0.1,R*0.3,-R*0.1);
+  // клеймо на спине
+  ctx.strokeStyle='#c9a24e';ctx.lineWidth=1.6;drawGlyph(-R*0.5,0,R*0.28);
+  // обрывок цепи на шее
+  ctx.strokeStyle='#8a9496';ctx.lineWidth=2.2;
+  ctx.beginPath();ctx.ellipse(R*0.95,0,R*0.16,R*0.75,0,0,TAU);ctx.stroke();
+  for(let i=1;i<=3;i++){ctx.beginPath();ctx.arc(R*0.95-i*R*0.12,R*0.78+i*R*0.16,R*0.07,0,TAU);ctx.stroke();}
+  // рога: от головы вбок и вперёд
+  ctx.strokeStyle='#0d0806';ctx.lineWidth=2;
+  for(const s of[-1,1]){
+    ctx.fillStyle='#e6d8b8';ctx.beginPath();
+    ctx.moveTo(R*1.35,s*R*0.4);ctx.quadraticCurveTo(R*1.55,s*R*1.35,R*2.5,s*R*1.15);
+    ctx.quadraticCurveTo(R*1.9,s*R*1.05,R*1.55,s*R*0.55);ctx.closePath();ctx.fill();ctx.stroke();
+    ctx.fillStyle='#3a2a1a';ctx.beginPath();ctx.arc(R*2.48,s*R*1.15,R*0.11,0,TAU);ctx.fill();
+  }
+  // уши, голова, морда
+  ctx.fillStyle='#2e1a10';
+  for(const s of[-1,1]){ctx.beginPath();ctx.ellipse(R*1.3,s*R*0.62,R*0.26,R*0.14,s*0.5,0,TAU);ctx.fill();ctx.stroke();}
+  ctx.beginPath();ctx.ellipse(R*1.5,0,R*0.62,R*0.5,0,0,TAU);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#5a3a26';ctx.beginPath();ctx.ellipse(R*1.95,0,R*0.34,R*0.3,0,0,TAU);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#1a0e08';for(const s of[-1,1]){ctx.beginPath();ctx.ellipse(R*2.12,s*R*0.13,R*0.06,R*0.09,0,0,TAU);ctx.fill();}
+  ctx.strokeStyle='#c9a24e';ctx.lineWidth=2;ctx.beginPath();ctx.arc(R*2.25,0,R*0.12,-Math.PI/2,Math.PI/2);ctx.stroke();   // кольцо в носу
+  ctx.strokeStyle='rgba(255,255,255,0.1)';ctx.lineWidth=2;line(ctx,R*1.2,-R*0.2,R*1.8,-R*0.2);
+  // пар из ноздрей при погоне
+  if(chasing){const k=(time*1.5+m.home.x)%1;ctx.fillStyle=`rgba(225,225,235,${0.35*(1-k)})`;
+    for(const s of[-1,1]){ctx.beginPath();ctx.arc(R*(2.3+k*0.8),s*R*(0.15+k*0.35),R*(0.08+k*0.28),0,TAU);ctx.fill();}}
+  ctx.restore();
+  drawMonsterEyes(m,px,py,alpha,time);
+}
+
+// ---------- F4. «ХОЗЯИН ЛАБИРИНТА» — вариант Б: минотавр в рост, «почти сверху» ----------
+// Плечи как площадка, голова с рогами лежит поверх плеч, топор вынесен вперёд, копыта еле видны сзади.
+function drawMonster3_minotaurTop(m,px,py,alpha,time){
+  const cfg=m.cfg,R=cfg.size,chasing=m.state==='chase'&&m.stun<=0,walking=m.moving>1;
+  const ph=m.legPhase*0.8,sway=walking?Math.sin(ph)*R*0.06:0;
+  ctx.save();ctx.globalAlpha=alpha;
+  if(chasing)drawAura(m,px,py,time);
+  flatShadow(px,py,m.facing,R*1.1,R*1.5,-R*0.1);
+  ctx.translate(px,py);ctx.rotate(m.facing);ctx.lineCap='round';ctx.lineJoin='round';
+  // копыта позади плеч (далеко внизу — маленькие)
+  ctx.fillStyle='#120c08';ctx.strokeStyle='#050302';ctx.lineWidth=1.5;
+  for(const s of[-1,1]){const st=walking?Math.sin(ph+(s>0?0:Math.PI))*R*0.22:0;ctx.beginPath();ctx.ellipse(-R*0.55+st,s*R*0.45,R*0.2,R*0.15,0,0,TAU);ctx.fill();ctx.stroke();}
+  // топор: древко вперёд, двойное лезвие
+  ctx.strokeStyle='#2a1a10';ctx.lineWidth=4;line(ctx,R*0.9,R*0.15,R*2.7,R*0.05);
+  ctx.fillStyle='#8a8f94';ctx.strokeStyle='#0d0806';ctx.lineWidth=1.5;
+  for(const s of[-1,1]){ctx.beginPath();ctx.moveTo(R*2.3,R*0.05);ctx.quadraticCurveTo(R*2.6,s*R*0.9,R*3.1,s*R*0.75);ctx.quadraticCurveTo(R*2.85,s*R*0.3,R*2.95,R*0.05);ctx.closePath();ctx.fill();ctx.stroke();}
+  // плечи (широкие поперёк хода) с шерстью
+  ctx.fillStyle='#3b2418';ctx.strokeStyle='#0d0806';ctx.lineWidth=2.5;
+  ctx.beginPath();ctx.ellipse(0,sway,R*0.8,R*1.35,0,0,TAU);ctx.fill();ctx.stroke();
+  ctx.strokeStyle='rgba(0,0,0,0.35)';ctx.lineWidth=1.5;for(let i=-4;i<=4;i++)line(ctx,-R*0.6,i*R*0.28+sway,-R*0.15,i*R*0.28+R*0.1+sway);
+  ctx.strokeStyle='#c9a24e';ctx.lineWidth=1.4;drawGlyph(-R*0.3,-R*0.85+sway,R*0.18);
+  // руки вперёд к древку, кулаки на нём, обрывки кандалов
+  for(const s of[-1,1]){const hx=s>0?R*1.25:R*1.75,hy=R*0.1;
+    ctx.fillStyle='#4a2e1e';ctx.strokeStyle='#0d0806';ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(R*0.2,s*R*1.15+sway);ctx.lineTo(R*0.55,s*R*1.3+sway);ctx.lineTo(hx+R*0.15,hy+s*R*0.2);ctx.lineTo(hx-R*0.2,hy+s*R*0.05);ctx.closePath();ctx.fill();ctx.stroke();
+    ctx.beginPath();ctx.arc(hx,hy,R*0.28,0,TAU);ctx.fill();ctx.stroke();
+    ctx.strokeStyle='#8a9496';ctx.lineWidth=2;ctx.beginPath();ctx.arc(hx-R*0.1,hy,R*0.3,0.6*s,2.4*s,s<0);ctx.stroke();
+  }
+  // рога вбок-вперёд, голова поверх плеч
+  ctx.strokeStyle='#0d0806';ctx.lineWidth=2;
+  for(const s of[-1,1]){ctx.fillStyle='#e6d8b8';ctx.beginPath();
+    ctx.moveTo(R*0.15,s*R*0.45+sway);ctx.quadraticCurveTo(R*0.3,s*R*1.5+sway,R*1.3,s*R*1.35+sway);
+    ctx.quadraticCurveTo(R*0.7,s*R*1.15+sway,R*0.4,s*R*0.6+sway);ctx.closePath();ctx.fill();ctx.stroke();
+    ctx.fillStyle='#3a2a1a';ctx.beginPath();ctx.arc(R*1.28,s*R*1.35+sway,R*0.1,0,TAU);ctx.fill();}
+  ctx.fillStyle='#2e1a10';
+  for(const s of[-1,1]){ctx.beginPath();ctx.ellipse(R*0.1,s*R*0.7+sway,R*0.24,R*0.13,s*0.5,0,TAU);ctx.fill();ctx.stroke();}
+  ctx.beginPath();ctx.ellipse(R*0.3,sway,R*0.6,R*0.55,0,0,TAU);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#5a3a26';ctx.beginPath();ctx.ellipse(R*0.72,sway,R*0.3,R*0.3,0,0,TAU);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#1a0e08';for(const s of[-1,1]){ctx.beginPath();ctx.ellipse(R*0.9,s*R*0.12+sway,R*0.05,R*0.08,0,0,TAU);ctx.fill();}
+  ctx.strokeStyle='#c9a24e';ctx.lineWidth=2;ctx.beginPath();ctx.arc(R*1.0,sway,R*0.11,-Math.PI/2,Math.PI/2);ctx.stroke();
+  if(chasing){const k=(time*1.5+m.home.x)%1;ctx.fillStyle=`rgba(225,225,235,${0.35*(1-k)})`;
+    for(const s of[-1,1]){ctx.beginPath();ctx.arc(R*(1.05+k*0.7),s*R*(0.15+k*0.35)+sway,R*(0.07+k*0.25),0,TAU);ctx.fill();}}
+  ctx.restore();
+  m._eyeOff=null;
+  // глаза для этого варианта — на макушке спереди
+  const saved=cfg.eyes;cfg.eyes={x:0.55,y:0.22,r:0.1};drawMonsterEyes(m,px,py,alpha,time);cfg.eyes=saved;
+}
+// ############################################################################
+// #                         КОНЕЦ БЛОКА F                                    #
+// ############################################################################
+
+
+
+// ############################################################################
+// #  БЛОК G. ПРЕДМЕТЫ, ЗВЁЗДЫ, ЗНАЧКИ КАРТЫ, HUD, МАГАЗИН, АНОМАЛИЯ, ВЫХОД     #
+// #  Вставлять ПОСЛЕ «КОНЕЦ БЛОКА F», ПЕРЕД startTransition.                 #
+// #  Перед вставкой (два переименования):                                    #
+// #    в D5:  function drawEntities(...)        -> drawMonstersLayer(...)     #
+// #    в E1:  function drawEntitiesOverlay(...) -> drawMonsterEyesOverlay(...)#
+// ############################################################################
+
+// ---------- G0. ПАЛИТРА И СПРАВОЧНИК ----------
+const ITEMS={
+  star:    {title:'Звезда',           color:'#ffd23a', map:'star'},
+  money:   {title:'Кристаллы',        color:'#4fb0ff', map:'dot'},
+  apple:   {title:'Яблоко',           color:'#7ed957', map:'dot'},
+  grenade: {title:'Граната',          color:'#ff7a1a', map:'dot'},
+  key1:    {title:'Фиолетовый ключ',  color:'#a86bff', map:'key'},
+  key2:    {title:'Бирюзовый ключ',   color:'#22d3c5', map:'key'},
+  key3:    {title:'Малиновый ключ',   color:'#ff4fa3', map:'key'},
+  scroll:  {title:'Свиток телепорта', color:'#e8d9a8', map:'rect', accent:'#6b6bff'},
+  exitmark:{title:'Метка выхода',     color:'#3ddc84', map:'square'},
+};
+const LOCK_COLORS={locked1:ITEMS.key1.color,locked2:ITEMS.key2.color,locked3:ITEMS.key3.color,locked:'#c0392b'};
+const MAP_COLORS={player:'#ffffff',monster:'#ff3a2a',exit:'#3ddc84',shop:'#e6b450',anomaly:'#8fd8ff'};
+function hexA(hex,a){const n=parseInt(hex.slice(1),16);return`rgba(${n>>16&255},${n>>8&255},${n&255},${a})`;}
+
+// ---------- G1. ДЕМО-ДАННЫЕ (в игре — ваши структуры) ----------
+const ROOM_KIND=new Map([['0,2','shop'],['4,2','anomaly'],['2,4','exit']]);
+function roomKind(rx,ry){return ROOM_KIND.get(rx+','+ry)||null;}
+const PICKUPS=new Map([['1,2','star'],['3,2','money'],['2,1','apple'],['2,3','grenade'],['1,1','key1'],['3,1','key2'],['1,3','key3'],['3,3','scroll'],['0,0','money'],['4,4','star'],['0,4','money'],['4,0','money']]);
+const DROPPED=[{type:'apple',rx:0,ry:1,dx:-60,dy:40},{type:'grenade',rx:4,ry:1,dx:50,dy:-30,armed:true}];
+let playerStars=3;
+const inventory={money:120,apple:2,grenade:1,key1:1,key2:0,key3:0,scroll:1};
+// демо-клавиши: H/J — минус/плюс звезда, A — бросить яблоко, G — бросить гранату
+document.addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  if(k==='h'||k==='р'){playerStars=Math.max(0,playerStars-1);flashMessage('Звёзд: '+playerStars);}
+  if(k==='j'||k==='о'){playerStars=Math.min(5,playerStars+1);flashMessage('Звёзд: '+playerStars);}
+  if(k==='a'||k==='ф')DROPPED.push({type:'apple',rx:player.x,ry:player.y,dx:(Math.random()-0.5)*120,dy:60+Math.random()*40});
+  if(k==='g'||k==='п')DROPPED.push({type:'grenade',rx:player.x,ry:player.y,dx:(Math.random()-0.5)*120,dy:60+Math.random()*40,armed:true});
+});
+
+// ---------- G2. ИКОНКИ ПРЕДМЕТОВ ----------
+// drawItem(type, x, y, масштаб, now, opts, контекст) — одна функция для пола, HUD, витрины и превью.
+// Базовый размер ~26 px при s=1.
+function starPath(c,x,y,r){c.beginPath();for(let i=0;i<10;i++){const a=-Math.PI/2+i*Math.PI/5,rr=i%2?r*0.46:r;const px=x+Math.cos(a)*rr,py=y+Math.sin(a)*rr;i?c.lineTo(px,py):c.moveTo(px,py);}c.closePath();}
+function drawItem(type,x,y,s=1,now=0,opts={},c=ctx){
+  const it=ITEMS[type];if(!it)return;
+  c.save();c.translate(x,y);c.scale(s,s);c.lineJoin='round';c.lineCap='round';
+  if(type==='star'){
+    starPath(c,0,0,13);c.fillStyle=it.color;c.fill();c.strokeStyle='#6b4a00';c.lineWidth=2;c.stroke();
+    starPath(c,-1.5,-2,6.5);c.fillStyle='rgba(255,255,255,0.4)';c.fill();
+  }else if(type==='money'){ // три кристалла
+    for(const[sx,sy,h,rot]of[[-8,5,9,-0.7],[9,6,8,0.6],[0,1,14,-0.12]]){
+      c.save();c.translate(sx,sy);c.rotate(rot);
+      c.beginPath();c.moveTo(0,-h);c.lineTo(4.5,-h*0.3);c.lineTo(3.5,h*0.45);c.lineTo(-3.5,h*0.45);c.lineTo(-4.5,-h*0.3);c.closePath();
+      c.fillStyle=it.color;c.fill();c.strokeStyle='#0f3554';c.lineWidth=1.5;c.stroke();
+      c.beginPath();c.moveTo(0,-h);c.lineTo(-4.5,-h*0.3);c.lineTo(-3.5,h*0.45);c.lineTo(0,h*0.05);c.closePath();c.fillStyle='rgba(255,255,255,0.4)';c.fill();
+      c.restore();
+    }
+  }else if(type==='apple'){
+    c.fillStyle=it.color;c.strokeStyle='#2d5a1c';c.lineWidth=2;
+    c.beginPath();c.moveTo(0,-6);c.bezierCurveTo(-4,-12,-14,-9,-13,1);c.bezierCurveTo(-12,9,-6,13,0,10);
+    c.bezierCurveTo(6,13,12,9,13,1);c.bezierCurveTo(14,-9,4,-12,0,-6);c.closePath();c.fill();c.stroke();
+    c.fillStyle='rgba(255,255,255,0.35)';c.beginPath();c.ellipse(-5,-2,3,5,0.4,0,TAU);c.fill();
+    c.strokeStyle='#5a3a1e';c.lineWidth=2;line(c,0,-6,1,-13);
+    c.fillStyle='#3f8f2a';c.strokeStyle='#1e4a12';c.lineWidth=1.2;c.beginPath();c.ellipse(5,-10,5,2.4,-0.5,0,TAU);c.fill();c.stroke();
+  }else if(type==='grenade'){
+    c.fillStyle='#3a3f45';c.strokeStyle='#0e1012';c.lineWidth=2;
+    c.beginPath();c.arc(0,3,11,0,TAU);c.fill();c.stroke();
+    c.strokeStyle='rgba(0,0,0,0.5)';c.lineWidth=1.2;                        // насечка
+    line(c,-10.5,3,10.5,3);line(c,0,-8,0,14);line(c,-9,-3,9,-3);line(c,-9,9,9,9);line(c,-6,-6,-6,12);line(c,6,-6,6,12);
+    c.fillStyle='rgba(255,255,255,0.12)';c.beginPath();c.ellipse(-4,-1,3.5,5,0.5,0,TAU);c.fill();
+    c.fillStyle='#6b7178';c.strokeStyle='#0e1012';c.lineWidth=1.5;c.fillRect(-4,-12,8,5);c.strokeRect(-4,-12,8,5);
+    c.strokeStyle='#c9b07a';c.lineWidth=2;c.beginPath();c.moveTo(0,-12);c.quadraticCurveTo(3,-18,9,-16);c.stroke();
+    if(opts.armed){                                                         // горящий фитиль
+      const f=0.7+0.3*Math.sin(now*0.03);
+      c.globalCompositeOperation='lighter';
+      const g=c.createRadialGradient(9,-16,0,9,-16,10*f);g.addColorStop(0,'rgba(255,200,80,0.9)');g.addColorStop(1,'rgba(255,120,0,0)');
+      c.fillStyle=g;c.beginPath();c.arc(9,-16,10*f,0,TAU);c.fill();
+      c.globalCompositeOperation='source-over';
+      c.fillStyle='#fff3c0';c.beginPath();c.arc(9,-16,1.8,0,TAU);c.fill();
+      c.fillStyle='#ffb040';for(let i=0;i<4;i++){const a=now*0.02+i*1.7,r=4+((now*0.05+i*7)%6);c.fillRect(9+Math.cos(a)*r,-16+Math.sin(a)*r,1.5,1.5);}
+    }
+  }else if(type.startsWith('key')){
+    for(const[col,w]of[['#15151d',6],[it.color,3.2]]){                     // тёмная подложка, затем цвет
+      c.strokeStyle=col;c.lineWidth=w;
+      c.beginPath();c.arc(-8,0,5,0,TAU);c.stroke();
+      line(c,-3,0,13,0);line(c,8,0,8,5);line(c,12,0,12,5);
+    }
+    c.strokeStyle='rgba(255,255,255,0.45)';c.lineWidth=1;c.beginPath();c.arc(-8,0,5,Math.PI*1.1,Math.PI*1.7);c.stroke();line(c,-2,-1,10,-1);
+  }else if(type==='scroll'){
+    c.fillStyle=it.color;c.strokeStyle='#5a4a2a';c.lineWidth=1.5;
+    c.fillRect(-13,-6,26,12);c.strokeRect(-13,-6,26,12);
+    c.strokeStyle='rgba(90,74,42,0.45)';c.lineWidth=1;line(c,-9,-2,-1,-2);line(c,-9,2,-3,2);
+    c.fillStyle='#cdbb8a';c.strokeStyle='#5a4a2a';c.lineWidth=1.5;
+    for(const ex of[-13,13]){c.beginPath();c.ellipse(ex,0,3.2,7.5,0,0,TAU);c.fill();c.stroke();}
+    c.globalCompositeOperation='lighter';                                   // светящаяся руна
+    const g=c.createRadialGradient(6,0,0,6,0,8);g.addColorStop(0,'rgba(120,120,255,0.6)');g.addColorStop(1,'rgba(120,120,255,0)');
+    c.fillStyle=g;c.fillRect(-2,-8,16,16);
+    c.globalCompositeOperation='source-over';
+    c.strokeStyle=it.accent;c.lineWidth=1.4;c.beginPath();c.arc(6,0,2.8,0,TAU);c.stroke();c.beginPath();c.arc(6,0,0.8,0,TAU);c.stroke();
+  }else if(type==='exitmark'){                                              // «карта с отметкой»
+    c.fillStyle='#22242c';c.strokeStyle='#8a8a99';c.lineWidth=1.5;c.fillRect(-12,-12,24,24);c.strokeRect(-12,-12,24,24);
+    c.strokeStyle='rgba(255,255,255,0.12)';c.lineWidth=1;for(let i=-6;i<=6;i+=6){line(c,i,-12,i,12);line(c,-12,i,12,i);}
+    c.strokeStyle=it.color;c.setLineDash([2,2]);line(c,-3,3,7,-7);c.setLineDash([]);
+    c.fillStyle='#fff';c.beginPath();c.arc(-3,3,1.8,0,TAU);c.fill();
+    c.fillStyle=it.color;c.fillRect(4,-10,6,6);
+  }
+  c.restore();
+}
+
+// ---------- G3. ПРЕДМЕТ НА ПОЛУ: «сцена» в центре и брошенные вещи ----------
+function drawPickup(type,sx,sy,now,alpha){
+  const it=ITEMS[type];if(!it)return;
+  const bob=Math.sin(now*0.003+sx*0.02)*2.5;
+  ctx.save();ctx.globalAlpha=alpha;
+  ctx.globalCompositeOperation='lighter';                                   // световая подставка в цвет предмета
+  const g=ctx.createRadialGradient(sx,sy+4,2,sx,sy+4,40);g.addColorStop(0,hexA(it.color,0.28));g.addColorStop(1,hexA(it.color,0));
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(sx,sy+4,40,0,TAU);ctx.fill();
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='rgba(0,0,0,0.4)';ctx.beginPath();ctx.ellipse(sx+2,sy+13,12-bob*0.6,4,0,0,TAU);ctx.fill();
+  drawItem(type,sx,sy-bob,1,now);
+  ctx.restore();
+}
+function drawDroppedItem(d,sx,sy,now,alpha){                                // лежит на полу: без парения и подставки
+  ctx.save();ctx.globalAlpha=alpha;
+  ctx.fillStyle='rgba(0,0,0,0.35)';ctx.beginPath();ctx.ellipse(sx+2,sy+8,11,4,0,0,TAU);ctx.fill();
+  drawItem(d.type,sx,sy,0.85,now,{armed:d.armed});
+  ctx.restore();
+}
+
+// ---------- G4. ЗНАЧКИ КАРТЫ И ДЕМО-МИНИКАРТА ----------
+function drawMapIcon(kind,x,y,sz=10,now=0){
+  const it=ITEMS[kind],col=it?it.color:(MAP_COLORS[kind]||'#fff'),shape=it?it.map:kind;
+  ctx.save();ctx.translate(x,y);ctx.fillStyle=col;ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.lineCap='round';
+  switch(shape){
+    case 'star':starPath(ctx,0,0,sz*0.55);ctx.fill();break;
+    case 'dot':ctx.beginPath();ctx.arc(0,0,sz*0.28,0,TAU);ctx.fill();break;
+    case 'key':ctx.beginPath();ctx.arc(-sz*0.25,0,sz*0.18,0,TAU);ctx.stroke();line(ctx,-sz*0.05,0,sz*0.45,0);line(ctx,sz*0.3,0,sz*0.3,sz*0.2);break;
+    case 'rect':ctx.fillRect(-sz*0.4,-sz*0.2,sz*0.8,sz*0.4);break;
+    case 'square':ctx.fillRect(-sz*0.3,-sz*0.3,sz*0.6,sz*0.6);break;
+    case 'exit':ctx.fillRect(-sz*0.4,-sz*0.4,sz*0.8,sz*0.8);break;
+    case 'shop':ctx.strokeRect(-sz*0.4,-sz*0.4,sz*0.8,sz*0.8);ctx.beginPath();ctx.arc(0,0,sz*0.13,0,TAU);ctx.fill();break;
+    case 'anomaly':ctx.beginPath();ctx.moveTo(-sz*0.3,-sz*0.45);ctx.lineTo(sz*0.1,-sz*0.05);ctx.lineTo(-sz*0.1,sz*0.05);ctx.lineTo(sz*0.3,sz*0.45);ctx.stroke();break;
+    case 'monster':ctx.beginPath();ctx.arc(0,0,sz*0.26,0,TAU);ctx.fill();break;
+    case 'player':{const p=0.75+0.25*Math.sin(now*0.006);ctx.beginPath();ctx.arc(0,0,sz*0.3*p,0,TAU);ctx.fill();ctx.globalAlpha=0.35;ctx.beginPath();ctx.arc(0,0,sz*0.5,0,TAU);ctx.fill();break;}
+  }
+  ctx.restore();
+}
+function drawMiniMap(now){
+  const cell=16,pad=10,ox=CANVAS_SIZE-pad-MAP.w*cell,oy=pad;
+  ctx.save();
+  ctx.fillStyle='rgba(10,10,16,0.85)';ctx.fillRect(ox-5,oy-5,MAP.w*cell+10,MAP.h*cell+10);
+  ctx.strokeStyle='#3a3a44';ctx.lineWidth=1;ctx.strokeRect(ox-5,oy-5,MAP.w*cell+10,MAP.h*cell+10);
+  for(let y=0;y<MAP.h;y++)for(let x=0;x<MAP.w;x++){
+    const cx=ox+x*cell+cell/2,cy=oy+y*cell+cell/2;
+    ctx.fillStyle='#1e1e26';ctx.fillRect(ox+x*cell+1,oy+y*cell+1,cell-2,cell-2);
+    const k=roomKind(x,y);if(k)drawMapIcon(k,cx,cy,13,now);
+    const it=PICKUPS.get(x+','+y);if(it)drawMapIcon(it,cx,cy,11,now);
+  }
+  for(const m of monsters)drawMapIcon('monster',ox+m.room.x*cell+cell/2,oy+m.room.y*cell+cell/2,11,now);
+  drawMapIcon('player',ox+player.x*cell+cell/2,oy+player.y*cell+cell/2,13,now);
+  ctx.restore();
+}
+
+// ---------- G5. HUD (демо; в игре у вас HTML-строка — иконки те же через drawItem) ----------
+function drawHud(now){
+  ctx.save();
+  ctx.fillStyle='rgba(10,10,16,0.75)';ctx.fillRect(10,10,330,36);ctx.strokeStyle='#3a3a44';ctx.lineWidth=1;ctx.strokeRect(10,10,330,36);
+  for(let i=0;i<Math.max(3,playerStars);i++){ctx.globalAlpha=i<playerStars?1:0.22;drawItem('star',30+i*24,28,0.7,now);}
+  ctx.globalAlpha=1;ctx.font='bold 13px sans-serif';ctx.textBaseline='middle';ctx.fillStyle='#ddd';
+  let x=130;
+  for(const[k,v]of Object.entries(inventory)){if(!v)continue;drawItem(k,x,28,0.55,now);ctx.fillText(v,x+15,29);x+=42;}
+  ctx.restore();
+}
+
+// ---------- G6. ИГРОК: «уголёк» без защиты, цветные замки ----------
+// Переопределяют одноимённые функции блока B (позднее объявление побеждает).
+function torchPos(now){
+  const cx=CANVAS_SIZE/2,cy=CANVAS_SIZE/2;
+  let fl=0.9+0.1*Math.sin(now*0.02)+0.06*Math.sin(now*0.047);
+  if(playerStars<=0)fl*=0.55+0.1*Math.sin(now*0.05);
+  if(PLAYER_STYLE!=='figure')return{x:cx,y:cy,fl};
+  const hand=facing==='W'?-1:1;
+  return{x:cx+hand*13*PLAYER_SCALE,y:cy-6*PLAYER_SCALE,fl};
+}
+function drawPlayerOrb(now){
+  const cx=CANVAS_SIZE/2,cy=CANVAS_SIZE/2,{fl}=torchPos(now);
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.4)';ctx.beginPath();ctx.ellipse(cx+2,cy+5,10,5,0,0,TAU);ctx.fill();
+  ctx.globalCompositeOperation='lighter';
+  if(playerStars>0){
+    const g=ctx.createRadialGradient(cx,cy,2,cx,cy,26*fl);
+    g.addColorStop(0,'rgba(255,230,170,0.9)');g.addColorStop(0.5,'rgba(255,180,80,0.35)');g.addColorStop(1,'rgba(255,140,40,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,cy,26*fl,0,TAU);ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='#fff6d8';ctx.beginPath();ctx.arc(cx,cy,6,0,TAU);ctx.fill();
+  }else{                                                                    // уголёк: тускло, без кольца
+    const g=ctx.createRadialGradient(cx,cy,1,cx,cy,14*fl);
+    g.addColorStop(0,'rgba(255,120,60,0.7)');g.addColorStop(1,'rgba(200,60,20,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,cy,14*fl,0,TAU);ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='#ff8a5a';ctx.beginPath();ctx.arc(cx,cy,4,0,TAU);ctx.fill();
+    ctx.fillStyle='#ffd0b0';ctx.beginPath();ctx.arc(cx-1,cy-1,1.5,0,TAU);ctx.fill();
+  }
+  ctx.restore();
+}
+function drawPlayerLight(now){
+  const{x,y,fl}=torchPos(now),alive=playerStars>0;
+  ctx.save();ctx.globalCompositeOperation='lighter';
+  const R=230*fl*(alive?1:0.55);
+  const g=ctx.createRadialGradient(x,y,10,x,y,R);
+  g.addColorStop(0,`rgba(255,220,160,${LIGHT.playerA*(alive?1:0.3)})`);g.addColorStop(1,'rgba(255,200,120,0)');
+  ctx.fillStyle=g;ctx.fillRect(x-R,y-R,R*2,R*2);ctx.restore();
+}
+function drawPadlock(x,y,color='#c0392b'){
+  ctx.save();ctx.translate(x,y);
+  ctx.strokeStyle='#e8c060';ctx.lineWidth=2.5;ctx.beginPath();ctx.arc(0,-3,4.5,Math.PI,0);ctx.stroke();
+  ctx.fillStyle=color;ctx.fillRect(-6,-3,12,10);
+  ctx.strokeStyle='rgba(0,0,0,0.7)';ctx.lineWidth=1;ctx.strokeRect(-6,-3,12,10);
+  ctx.fillStyle='rgba(0,0,0,0.7)';ctx.beginPath();ctx.arc(0,1.5,1.5,0,TAU);ctx.fill();
+  ctx.restore();
+}
+
+// ---------- G7. МАГАЗИН ----------
+let shopOverlay=null;
+const SHOP_LAMPS=[[92,273],[308,273]];
+function getShopOverlay(){
+  if(shopOverlay)return shopOverlay;
+  const off=document.createElement('canvas');off.width=off.height=S;const c=off.getContext('2d');
+  c.lineJoin='round';c.lineCap='round';
+  // ковёр
+  const rx=80,ry=115,rw=240,rh=170;
+  c.fillStyle='rgba(0,0,0,0.3)';c.fillRect(rx+3,ry+4,rw,rh);
+  c.fillStyle='hsl(350,45%,26%)';c.fillRect(rx,ry,rw,rh);
+  c.strokeStyle='#c9a24e';c.lineWidth=3;c.strokeRect(rx+7,ry+7,rw-14,rh-14);
+  c.lineWidth=1;c.strokeRect(rx+13,ry+13,rw-26,rh-26);
+  c.fillStyle='rgba(201,162,78,0.35)';
+  for(let x=rx+26;x<rx+rw-14;x+=24)for(const y of[ry+20,ry+rh-20]){c.beginPath();c.moveTo(x,y-5);c.lineTo(x+5,y);c.lineTo(x,y+5);c.lineTo(x-5,y);c.closePath();c.fill();}
+  // прилавок
+  const px=100,py=135,pw=200,ph=26;
+  c.fillStyle='rgba(0,0,0,0.4)';c.fillRect(px+3,py+4,pw,ph);
+  c.fillStyle='#6b4423';c.fillRect(px,py,pw,ph);c.strokeStyle='#2a1a0c';c.lineWidth=2;c.strokeRect(px,py,pw,ph);
+  c.strokeStyle='rgba(0,0,0,0.3)';c.lineWidth=1;for(let i=1;i<3;i++)line(c,px,py+ph*i/3,px+pw,py+ph*i/3);
+  c.strokeStyle='rgba(255,220,160,0.2)';line(c,px,py+1,px+pw,py+1);
+  // товар
+  ['star','apple','grenade','key1','scroll','exitmark'].forEach((g,i)=>drawItem(g,px+20+i*32,py+ph/2,0.6,0,{},c));
+  // торговец (спиной к северной стене): мантия, капюшон, руки на прилавке
+  const mx=200,my=106;
+  c.fillStyle='rgba(0,0,0,0.4)';c.beginPath();c.ellipse(mx+3,my+4,20,15,0,0,TAU);c.fill();
+  c.fillStyle='#3a2a4a';c.strokeStyle='#120c18';c.lineWidth=2;c.beginPath();c.ellipse(mx,my,20,15,0,0,TAU);c.fill();c.stroke();
+  c.fillStyle='#4a3a5e';c.beginPath();c.arc(mx,my+2,10,0,TAU);c.fill();c.stroke();
+  c.fillStyle='#1a1020';c.beginPath();c.ellipse(mx,my+7,6,3.5,0,0,TAU);c.fill();
+  c.fillStyle='#d9b892';c.strokeStyle='#5a3a1e';c.lineWidth=1.2;
+  for(const s of[-1,1]){c.beginPath();c.ellipse(mx+s*14,py+7,5,3.5,0,0,TAU);c.fill();c.stroke();}
+  // сундук справа от торговца
+  c.fillStyle='rgba(0,0,0,0.4)';c.fillRect(px+pw-30+3,my-12+4,30,24);
+  c.fillStyle='#5a3a1e';c.strokeStyle='#2a1a0c';c.lineWidth=2;c.fillRect(px+pw-30,my-12,30,24);c.strokeRect(px+pw-30,my-12,30,24);
+  c.fillStyle='#8a9496';c.fillRect(px+pw-30,my-2,30,4);c.fillRect(px+pw-17,my-12,4,24);
+  drawItem('money',px+pw-14,my+2,0.45,0,{},c);
+  // выручка на прилавке и вывеска-табличка перед ковром
+  drawItem('money',px+pw-12,py+ph+16,0.5,0,{},c);
+  c.fillStyle='#4a3218';c.strokeStyle='#1a0e06';c.lineWidth=1.5;c.fillRect(160,ry+rh+10,80,20);c.strokeRect(160,ry+rh+10,80,20);
+  drawItem('money',180,ry+rh+20,0.45,0,{},c);drawItem('star',222,ry+rh+20,0.5,0,{},c);
+  c.strokeStyle='#c9a24e';c.lineWidth=1.5;line(c,198,ry+rh+13,204,ry+rh+27);
+  // столбы фонарей (сами фонари светятся динамически)
+  for(const[lx,ly]of SHOP_LAMPS){
+    c.fillStyle='rgba(0,0,0,0.4)';c.beginPath();c.arc(lx+3,ly+4,7,0,TAU);c.fill();
+    c.fillStyle='#2a1a0c';c.beginPath();c.arc(lx,ly,7,0,TAU);c.fill();c.strokeStyle='#0d0806';c.lineWidth=1.5;c.stroke();
+    c.fillStyle='#b58a3a';c.beginPath();c.arc(lx,ly,3.5,0,TAU);c.fill();
+  }
+  shopOverlay=off;return off;
+}
+function drawShopRoom(r,now){
+  ctx.save();ctx.globalAlpha=r.alpha;
+  ctx.drawImage(getShopOverlay(),r.x0,r.y0);
+  ctx.globalCompositeOperation='lighter';
+  for(const[lx,ly]of SHOP_LAMPS){
+    const x=r.x0+lx,y=r.y0+ly,fl=0.9+0.1*Math.sin(now*0.011+lx);
+    const g=ctx.createRadialGradient(x,y,3,x,y,120*fl);
+    g.addColorStop(0,'rgba(255,190,90,0.45)');g.addColorStop(0.4,'rgba(255,150,50,0.15)');g.addColorStop(1,'rgba(255,120,30,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,120*fl,0,TAU);ctx.fill();
+    ctx.fillStyle='#ffe0a0';ctx.beginPath();ctx.arc(x,y,3*fl,0,TAU);ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------- G8. АНОМАЛИЯ ----------
+let anomalyOverlay=null;
+const ANOM_NODES=[[110,110],[290,110],[110,290],[290,290],[200,200]];   // 4 громоотвода + центральный диск
+function getAnomalyOverlay(){
+  if(anomalyOverlay)return anomalyOverlay;
+  const off=document.createElement('canvas');off.width=off.height=S;const c=off.getContext('2d');
+  const rng=mulberry32(0x0A0BADF0);
+  for(let i=0;i<16;i++){                                                    // выжженные пятна
+    const x=rng()*S,y=rng()*S,rad=25+rng()*60;
+    const g=c.createRadialGradient(x,y,0,x,y,rad);g.addColorStop(0,'rgba(0,0,0,0.5)');g.addColorStop(1,'rgba(0,0,0,0)');
+    c.fillStyle=g;c.fillRect(x-rad,y-rad,rad*2,rad*2);
+  }
+  c.strokeStyle='rgba(0,0,0,0.5)';c.lineWidth=6;c.lineCap='round';           // канавки к громоотводам
+  for(const[x,y]of ANOM_NODES.slice(0,4))line(c,200,200,x,y);
+  c.fillStyle='#2a2d33';c.strokeStyle='#0d0f12';c.lineWidth=2;               // центральный диск
+  c.beginPath();c.arc(200,200,44,0,TAU);c.fill();c.stroke();
+  c.strokeStyle='#4a5058';c.lineWidth=1.5;c.beginPath();c.arc(200,200,32,0,TAU);c.stroke();
+  for(let i=0;i<8;i++){const a=i/8*TAU;line(c,200+Math.cos(a)*12,200+Math.sin(a)*12,200+Math.cos(a)*42,200+Math.sin(a)*42);}
+  c.fillStyle='#0a0c10';c.beginPath();c.arc(200,200,8,0,TAU);c.fill();
+  c.fillStyle='#c47a3a';c.beginPath();c.arc(200,200,4,0,TAU);c.fill();
+  for(const[x,y]of ANOM_NODES.slice(0,4)){                                  // громоотводы
+    c.fillStyle='rgba(0,0,0,0.4)';c.fillRect(x-13+3,y-13+4,26,26);
+    c.fillStyle='#33373d';c.strokeStyle='#0d0f12';c.lineWidth=1.5;c.fillRect(x-13,y-13,26,26);c.strokeRect(x-13,y-13,26,26);
+    c.fillStyle='#5a6068';c.beginPath();c.arc(x,y,7,0,TAU);c.fill();c.stroke();
+    c.fillStyle='#c47a3a';c.beginPath();c.arc(x,y,3.5,0,TAU);c.fill();
+  }
+  anomalyOverlay=off;return off;
+}
+function drawAnomalyRoom(r,now){
+  ctx.save();ctx.globalAlpha=r.alpha;
+  ctx.drawImage(getAnomalyOverlay(),r.x0,r.y0);
+  ctx.fillStyle=`rgba(110,160,255,${0.05+0.03*Math.sin(now*0.004)})`;ctx.fillRect(r.x0,r.y0,S,S);  // холодная подсветка
+  ctx.restore();
+}
+function drawAnomalyArcs(r,now){                                            // поверх тумана — видно издалека
+  const bucket=Math.floor(now/80),rng=mulberry32((bucket*7919+r.rx*131+r.ry*17)|0);
+  const n=rng()<0.35?0:1+Math.floor(rng()*2);
+  ctx.save();ctx.globalAlpha=Math.min(1,r.alpha+0.25);ctx.globalCompositeOperation='lighter';ctx.lineCap='round';ctx.lineJoin='round';
+  for(let k=0;k<n;k++){
+    const a=ANOM_NODES[Math.floor(rng()*5)];let b=ANOM_NODES[Math.floor(rng()*5)];if(b===a)b=a===ANOM_NODES[4]?ANOM_NODES[0]:ANOM_NODES[4];
+    const dx=-(b[1]-a[1]),dy=b[0]-a[0],L=Math.hypot(dx,dy)||1,pts=[],segs=10;
+    for(let i=0;i<=segs;i++){const t=i/segs,j=(i===0||i===segs)?0:(rng()-0.5)*40;pts.push([r.x0+a[0]+(b[0]-a[0])*t+dx/L*j,r.y0+a[1]+(b[1]-a[1])*t+dy/L*j]);}
+    for(const[col,w]of[['rgba(100,160,255,0.25)',7],['rgba(170,210,255,0.6)',2.5],['rgba(255,255,255,0.95)',1]]){
+      ctx.strokeStyle=col;ctx.lineWidth=w;ctx.beginPath();pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.stroke();}
+    ctx.fillStyle='rgba(200,225,255,0.9)';
+    for(const e of[a,b])for(let i=0;i<4;i++){const ang=rng()*TAU,d=4+rng()*14;ctx.fillRect(r.x0+e[0]+Math.cos(ang)*d,r.y0+e[1]+Math.sin(ang)*d,1.5,1.5);}
+    ctx.fillStyle='rgba(120,170,255,0.06)';ctx.fillRect(r.x0,r.y0,S,S);   // вспышка
+  }
+  for(const[x,y]of ANOM_NODES){                                             // постоянное тление на кончиках
+    const f=0.6+0.4*Math.sin(now*0.02+x*0.1+y*0.07),X=r.x0+x,Y=r.y0+y;
+    const g=ctx.createRadialGradient(X,Y,0,X,Y,10*f);g.addColorStop(0,'rgba(150,200,255,0.5)');g.addColorStop(1,'rgba(150,200,255,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(X,Y,10*f,0,TAU);ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------- G9. ВЫХОД ----------
+function exitSide(rx,ry){return rx===0?'W':rx===MAP.w-1?'E':ry===0?'N':ry===MAP.h-1?'S':null;}
+function drawExitPortal(r,now){
+  const side=exitSide(r.rx,r.ry);if(!side)return;
+  const[ax,ay,bx,by]=sideSegment(r.x0,r.y0,side),mx=(ax+bx)/2,my=(ay+by)/2;
+  const rot={S:0,W:Math.PI/2,N:Math.PI,E:-Math.PI/2}[side];
+  const W=130,H=WALL_T/2,depth=90,[wh,ws,wl]=r.theme.wall;
+  ctx.save();ctx.globalAlpha=r.alpha;ctx.translate(mx,my);ctx.rotate(rot);  // локально: +y = наружу
+  // дневной свет ложится на пол комнаты
+  ctx.save();ctx.globalCompositeOperation='lighter';
+  const sp=ctx.createRadialGradient(0,0,10,0,0,240);sp.addColorStop(0,'rgba(200,225,255,0.35)');sp.addColorStop(0.5,'rgba(180,210,255,0.12)');sp.addColorStop(1,'rgba(160,200,255,0)');
+  ctx.fillStyle=sp;ctx.beginPath();ctx.arc(0,0,240,0,TAU);ctx.fill();ctx.restore();
+  // листья, занесённые внутрь
+  ctx.fillStyle='#4f8a33';
+  for(let i=0;i<9;i++){const x=Math.sin(i*2.3)*W*0.5,y=-H-8-(i*29)%70;ctx.beginPath();ctx.ellipse(x,y,4,2.3,i*0.9,0,TAU);ctx.fill();}
+  // проём: от сумрака у стены к свету снаружи
+  const sky=ctx.createLinearGradient(0,-H,0,depth);sky.addColorStop(0,'#1d2b3a');sky.addColorStop(0.45,'#5f86a8');sky.addColorStop(1,'#e2eef8');
+  ctx.fillStyle=sky;ctx.fillRect(-W/2,-H-2,W,depth+H+2);
+  for(let i=0;i<5;i++){                                                     // ступени вверх
+    const y0=H+2+i*14;ctx.fillStyle=`rgba(255,255,255,${0.05+i*0.05})`;ctx.fillRect(-W/2+8,y0,W-16,13);
+    ctx.strokeStyle='rgba(0,0,0,0.35)';ctx.lineWidth=1;line(ctx,-W/2+8,y0,W/2-8,y0);
+  }
+  ctx.strokeStyle='#5f9a3c';ctx.lineWidth=1.5;                               // трава на ступенях
+  for(let i=0;i<10;i++){const x=-W/2+14+i*12,y=H+30+((i*37)%40);line(ctx,x,y,x-2,y-6);line(ctx,x,y,x+3,y-5);}
+  for(const s of[-1,1]){                                                    // каменные косяки
+    const x=s*W/2;
+    ctx.fillStyle='rgba(0,0,0,0.4)';ctx.fillRect(x-9+3,-H-8+3,18,H*2+16);
+    ctx.fillStyle=hsl(wh,ws,wl+10);ctx.fillRect(x-9,-H-8,18,H*2+16);
+    ctx.strokeStyle='rgba(0,0,0,0.6)';ctx.lineWidth=1.5;ctx.strokeRect(x-9,-H-8,18,H*2+16);
+  }
+  ctx.strokeStyle='#3f7a2a';ctx.lineWidth=2;                                 // плющ, ползущий от проёма внутрь
+  for(const s of[-1,1])for(let i=0;i<3;i++){
+    const x=s*(W/2+16+i*22);ctx.beginPath();ctx.moveTo(x,H);ctx.quadraticCurveTo(x+s*6,-H-14-i*8,x-s*4,-H-38-i*12);ctx.stroke();
+    ctx.fillStyle='#4f9a35';for(let k=1;k<=3;k++){const t=k/3.5;ctx.beginPath();ctx.ellipse(x+s*3*(1-t),H-(H*2+38+i*12)*t,4,2.5,s*0.7,0,TAU);ctx.fill();}
+  }
+  ctx.fillStyle='rgba(255,255,255,0.6)';                                    // пылинки в луче
+  for(let i=0;i<10;i++){const t=(now*0.00008*(1+i%3)+i*0.37)%1,x=(i-5)*W/12+Math.sin(now*0.001+i)*8;ctx.beginPath();ctx.arc(x,-t*150,1.2,0,TAU);ctx.fill();}
+  ctx.restore();
+}
+
+// ---------- G10. СЛОИ ----------
+function drawEntities(visible,now){
+  for(const r of visible){const k=roomKind(r.rx,r.ry);
+    if(k==='shop')drawShopRoom(r,now);else if(k==='anomaly')drawAnomalyRoom(r,now);else if(k==='exit')drawExitPortal(r,now);}
+  for(const r of visible){const t=PICKUPS.get(r.rx+','+r.ry);if(t)drawPickup(t,r.sx,r.sy,now,r.alpha);}
+  for(const d of DROPPED){const r=visible.find(v=>v.rx===d.rx&&v.ry===d.ry);if(r)drawDroppedItem(d,r.sx+d.dx,r.sy+d.dy,now,r.alpha);}
+  drawMonstersLayer(visible,now);
+}
+function drawEntitiesOverlay(visible,now){
+  drawMonsterEyesOverlay(visible,now);
+  for(const r of visible)if(roomKind(r.rx,r.ry)==='anomaly')drawAnomalyArcs(r,now);
+  drawHud(now);drawMiniMap(now);
+}
+// ############################################################################
+// #                         КОНЕЦ БЛОКА G                                    #
+// ############################################################################
+
+
+
+// ############################################################################
+// #  БЛОК C. ПЕРЕХОДЫ, ВВОД, ЦИКЛ.  (механика — как в оригинале)             #
+// ############################################################################
+function startTransition(dir){
+  if(transition)return;
+  const dt=MAP.rooms[player.y][player.x][dir];
+  if(dt==='wall'){flashMessage('Там стена');return;}
+  if(String(dt).startsWith('locked')){flashMessage('Дверь заперта');return;}
+  transition={phase:'opening',dir,doorKey:doorKey(player.x,player.y,dir),swingDir:SWING_BY_DIR[dir],doorAngle:0,progress:0};
+}
+
+function updateTransition(dt){
+  if(!transition)return;
+  transition.progress+=dt;
+  if(transition.phase==='opening'){
+    const t=Math.min(transition.progress/T_OPEN,1);
+    transition.doorAngle=easeInOut(t)*90;
+    if(t>=1){transition.phase='moving';transition.progress=0;transition.doorAngle=90;}
+  }else if(transition.phase==='moving'){
+    const t=Math.min(transition.progress/T_MOVE,1);
+    const e=easeInOut(t);
+    visual.offsetX=DIR[transition.dir].dx*ROOM_SIZE*e;
+    visual.offsetY=DIR[transition.dir].dy*ROOM_SIZE*e;
+    if(t>=1){
+      player.x+=DIR[transition.dir].dx;player.y+=DIR[transition.dir].dy;
+      visual.offsetX=0;visual.offsetY=0;
+      transition.phase='closing';transition.progress=0;transition.doorAngle=90;
+      posEl.textContent=`${player.x}, ${player.y}`;
+    }
+  }else if(transition.phase==='closing'){
+    const t=Math.min(transition.progress/T_CLOSE,1);
+    transition.doorAngle=(1-easeInOut(t))*90;
+    if(t>=1)transition=null;
+  }
+}
+
+canvas.addEventListener('click',(e)=>{
+  if(transition)return;
+  const rect=canvas.getBoundingClientRect();
+  const mx=(e.clientX-rect.left)*(canvas.width/rect.width);
+  const my=(e.clientY-rect.top)*(canvas.height/rect.height);
+  const dx=Math.round((mx-CANVAS_SIZE/2)/ROOM_SIZE);
+  const dy=Math.round((my-CANVAS_SIZE/2)/ROOM_SIZE);
+  if(Math.abs(dx)+Math.abs(dy)!==1)return;
+  const dir=Object.keys(DIR).find(d=>DIR[d].dx===dx&&DIR[d].dy===dy);
+  if(dir)startTransition(dir);
+});
+
+document.addEventListener('keydown',(e)=>{
+  const km={ArrowUp:'N',ArrowDown:'S',ArrowRight:'E',ArrowLeft:'W'};
+  const dir=km[e.key]; if(!dir)return; e.preventDefault();
+  if(transition)return; startTransition(dir);
+});
+
+let messageTimer=null;
+function flashMessage(text){
+  msgEl.textContent=text;
+  clearTimeout(messageTimer);
+  messageTimer=setTimeout(()=>{msgEl.textContent='';},1500);
+}
+
+let lastTime=performance.now();
+function loop(now){
+  const dt=Math.min((now-lastTime)/1000,0.1); lastTime=now;
+  updateTransition(dt); if(typeof updateMonsters==='function')updateMonsters(dt); render(now);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+
+</body>
+</html>
