@@ -17,6 +17,7 @@ function eatApple(m){
   if (!appleInRoom(m.room.x,m.room.y)) return false;
   const cx=roomCX(m.room.x), cy=roomCY(m.room.y);
   MAP.items.delete(`${m.room.x},${m.room.y}`);
+  Snd.at('munch',m.x,m.y);
   mapDirty=true;
   // монстр засыпает В КОМНАТЕ — недалеко от середины (не в дверях),
   // там же, где уснул бы после укуса игрока
@@ -44,6 +45,7 @@ function dropApple(){
   mapDirty=true;
   updateHud();
   flashMessage('Яблоко оставлено — монстр подойдёт и съест его, когда войдёт');
+  Snd.play('ui');
 }
 
 // ============================================================
@@ -66,7 +68,7 @@ function doDropGrenade(){
     y:roomCY(player.y)+Math.sin(a)*30,
     t:GRENADE_FUSE,
   });
-  flashMessage('Граната брошена!');
+  flashMessage('Граната брошена!'); Snd.play('throw');
 }
 
 function updateGrenades(dt){
@@ -76,6 +78,7 @@ function updateGrenades(dt){
     if (g.t>0) continue;
     grenades.splice(i,1);
     explosions.push({x:g.x, y:g.y, t:0});
+    Snd.at('explosion',g.x,g.y,{v:1.1});
     let killed=0, wounded=0;
     for (const m of monsters){
       if (Math.hypot(m.x-g.x, m.y-g.y) > GRENADE_RADIUS) continue;
@@ -149,7 +152,7 @@ function useTeleport(){
   player.x=c.x; player.y=c.y;
   visual.offsetX=0; visual.offsetY=0;
   camX=roomCX(player.x); camY=roomCY(player.y);
-  teleFx={t:0};
+  teleFx={t:0}; Snd.play('teleport');
   // Телепорт полностью сбрасывает агрессию ВСЕХ монстров: они бросают погоню.
   // Босс идёт к своему спавну пешком; остальных возвращаем к их месту сразу —
   // вся «работа» по отвлечению монстров теряется.
