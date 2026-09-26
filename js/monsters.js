@@ -12,6 +12,7 @@ const MONSTER_TYPES={
     sateTime:null,                 // null → берётся TUNE.sateTime (30 с)
     chaseSpeed:85, wanderSpeed:32, size:13,
     gait:0.16,            // скорость перебора ног на единицу пути
+    stepSound:'claw', stepVol:0.55,   // цокот паучьих лап
     turnRate:9,           // рад/с: мелкий и юркий — вертится быстро
     bodyColor:'#5a1f1f', shellColor:'#8e2b2b', legColor:'#3a1414',
     eyeColor:'#ffd24a', eyeHotColor:'#ff3a2a', auraColor:'rgba(200,40,40,',
@@ -36,6 +37,7 @@ const MONSTER_TYPES={
     patrol:true, patrolRadius:10, pursueGiveUp:5,
     chaseSpeed:92, patrolSpeed:46, wanderSpeed:34, size:16,
     gait:0.14,            // шаг ящера — от пройденного пути
+    stepSound:'scrape', stepVol:0.8,  // скрежет когтей по камню
     turnRate:2.6,         // рад/с: крупное тело разворачивается неспешно
     bodyColor:'#3f5a2e', backColor:'#2d4321', bellyColor:'#6d7a4a', legColor:'#33482a',
     eyeColor:'#e8d45a', eyeHotColor:'#ff3a2a', auraColor:'rgba(120,180,60,',
@@ -60,6 +62,7 @@ const MONSTER_TYPES={
     maxHp:30, starDamage:3, sateTime:null,
     chaseSpeed:88, wanderSpeed:40, patrolSpeed:40, size:24,
     gait:0.11,            // тяжёлая поступь
+    stepSound:'hoof', stepVol:1.0,    // копыта
     turnRate:1.5,         // рад/с: бык почти неповоротлив — разворот заметно долгий
     bodyColor:'#3b2418', shellColor:'#2e1a10', armorColor:'#1a100a',
     plateColor:'#5a3a26', runeColor:'#c9a24e', eyeColor:'#ff3a2a',
@@ -81,13 +84,16 @@ let zaps=[];   // визуальные разряды аномалии {x,y,t}
 function damageMonster(m,dmg,cause){
   if (m.dead) return;
   m.hp-=dmg;
+  if (cause==='trap') Snd.at('zap',m.x,m.y,{v:1.1});
   if (cause==='trap') zaps.push({x:m.x, y:m.y, t:0});
   if (m.hp<=0){
     m.dead=true;
     if (m.cross){ releaseDoor(m.cross.key,m); m.cross=null; }
+    Snd.at('kill',m.x,m.y);
     if (cause==='trap') flashMessage('Аномалия уничтожила монстра!');
   } else {
     m.stun=Math.max(m.stun,1.2);   // выживший — оглушён
+    Snd.at(m.cfg.boss?'roar':'hurt',m.x,m.y);
     if (cause==='trap') flashMessage('Аномалия ранила монстра!');
   }
 }
@@ -533,7 +539,12 @@ function steerMove(m,tx,ty,speed,dt,useObstacle){
   m.moving=speed;
   // ФАЗА ШАГА — от реально пройденного пути, а не от времени:
   // монстр «перебирает ногами» ровно настолько, насколько сдвинулся.
-  m.legPhase=(m.legPhase||0)+step*(m.cfg.gait||0.16);
+  const phPrev=m.legPhase||0;
+  m.legPhase=phPrev+step*(m.cfg.gait||0.16);
+  // ЦОКОТ: щелчок на каждом полуобороте фазы — то есть ровно тогда,
+  // когда нарисованная нога касается пола. Звук един с анимацией.
+  if (Math.floor(m.legPhase/Math.PI)!==Math.floor(phPrev/Math.PI))
+    Snd.at(m.cfg.stepSound||'claw', m.x, m.y, {v:m.cfg.stepVol||1});
 
   // ПОВОРОТ ТЕЛА с ограничением скорости: крупные монстры (Ящер, Бык)
   // не могут развернуться мгновенно — turnRate задан в MONSTER_TYPES (рад/с).
@@ -1090,7 +1101,7 @@ function onBossCatch(m){
   m.state='idle'; m.reason=''; m.targetRoom=null;
   m.wanderTarget=null; m.ignoreDoorKey=null; m.alert=0; m.moving=0;
   if (TUNE.bossLethal){
-    gameOver=true; gameOverText='ПОЙМАН БОССОМ'; updateHud();
+    gameOver=true; gameOverText='ПОЙМАН БОССОМ'; updateHud(); Snd.play('death');
     flashMessage('Надзиратель сомкнул хватку — это конец');
   } else {
     const loss=(m.starDamage!==undefined?m.starDamage:3);
@@ -1100,7 +1111,7 @@ function onBossCatch(m){
         ? `Надзиратель смял вас: −${loss}. Осталось ${inv.stars}`
         : 'Надзиратель разбил последнюю звезду!');
     } else {
-      gameOver=true; gameOverText='ПОЙМАН БОССОМ'; updateHud();
+      gameOver=true; gameOverText='ПОЙМАН БОССОМ'; updateHud(); Snd.play('death');
       flashMessage('У вас не осталось звёзд — Надзиратель добил вас');
     }
     m.stun=1.6;      // тяжело дышит после удара, но не уходит
@@ -1136,7 +1147,7 @@ function onCatch(m){
       ? `${who} сбил звёзды: −${loss}. Осталось ${inv.stars}`
       : `${who} разбил последнюю звезду (−${loss})!`);
   } else {
-    gameOver=true; gameOverText='ВАС СЪЕЛИ'; updateHud();
+    gameOver=true; gameOverText='ВАС СЪЕЛИ'; updateHud(); Snd.play('death');
     flashMessage(`Вас съел ${who.toLowerCase()}`);
   }
 }
