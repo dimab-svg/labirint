@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Лабиринт — v14 (Охотник, сложность-тюнинг, ключи, спавн)</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+
+<div id="app">
+
+  <aside id="side">
+    <div class="panel">
+      <h3>КАРТА</h3>
+      <div class="row">
+        <button id="modeLocal" class="on">Окрестности</button>
+        <button id="modeFull">Весь лабиринт</button>
+      </div>
+      <div class="row"><canvas id="mapCanvas" width="384" height="384"></canvas></div>
+      <div id="legend">
+        <span class="sw" style="background:#61707f"></span>пройдено
+        <span class="sw" style="background:#2b3542;margin-left:6px"></span>видел
+        <span class="sw" style="background:#ffd451;margin-left:6px"></span>звезда
+        <span class="sw" style="background:#5fc98a;margin-left:6px"></span>деньги<br>
+        <span class="sw" style="background:#2f3338"></span>граната
+        <span class="sw" style="background:#ff8b77;margin-left:6px"></span>яблоко
+        <span class="sw" style="background:#dfe6ee;margin-left:6px"></span>магазин
+        <span class="sw" style="background:#7ce0ff;margin-left:6px"></span>аномалия (бьёт монстров)
+        <span class="sw" style="background:#b07ae8;margin-left:6px"></span><span class="sw" style="background:#3fd0c8"></span><span class="sw" style="background:#f0509a"></span>ключи и двери<br>
+        <span class="sw" style="background:#b0172f"></span>Босс «Надзиратель» (убить — ~10 гранат)
+      </div>
+    </div>
+
+    <div class="panel" id="shopPanel">
+      <h3>МАГАЗИН</h3>
+      <div id="shopBody">
+        <div class="row" style="font-size:12px;color:#6f7887">Найдите комнату-магазин</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>ЛАБИРИНТ</h3>
+      <div class="row">
+        <label>Сложность</label>
+        <select id="diffSel">
+          <option value="easy">Лёгкий (625)</option>
+          <option value="normal" selected>Средний (1089)</option>
+          <option value="hard">Сложный (1681)</option>
+        </select>
+        <button id="newBtn">Новый</button>
+      </div>
+      <div class="row">
+        <label>Сид</label><code id="seedOut">—</code>
+        <button id="copySeed">копировать</button>
+      </div>
+      <div class="row">
+        <input id="seedIn" type="text" inputmode="numeric" placeholder="вставить сид…">
+        <button id="applySeed">Играть</button>
+      </div>
+      <div class="row">
+        <button id="dbgBtn">Отладка (F2)</button>
+        <button id="solBtn" class="danger">Решение</button>
+      </div>
+      <div class="row">
+        <button id="loadBtn">Загрузить</button>
+        <button id="pauseBtn">Пауза (P)</button>
+      </div>
+      <div class="row">
+        <label>Буфер хода</label>
+        <select id="bufSel">
+          <option value="0">выкл (как v10)</option>
+          <option value="0.25">250 мс</option>
+          <option value="0.5" selected>500 мс</option>
+          <option value="0.8">800 мс</option>
+          <option value="99">весь ход</option>
+        </select>
+        <button id="holdBtn">Удержание: выкл</button>
+      </div>
+    </div>
+
+    <div class="panel" id="cheatPanel">
+      <h3>ТЕСТ (потом удалим)</h3>
+      <div class="row">
+        <button id="cheatAll">Выдать всё</button>
+        <button id="cheatKeys">Все ключи</button>
+        <button id="cheatHints">Подсказки</button>
+      </div>
+      <div class="row">
+        <button id="cheatToExit">К выходу</button>
+        <button id="cheatKill" class="danger">Зачистить 5×5</button>
+      </div>
+      <div class="row">
+        <button id="cheatHunter">Охотник рядом</button>
+        <button id="cheatTrap">Проверить аномалию</button>
+      </div>
+    </div>
+  </aside>
+
+  <div id="stage">
+    <div id="hud">
+      <span class="chip stars" id="chipStars">★ <b>3</b></span>
+      <span class="chip coins" id="chipCoins">₥ <b>0</b></span>
+      <span class="chip gren off" id="chipGren" title="Бросить гранату">✹ <b>0</b></span>
+      <span class="chip tele off" id="chipTele" title="Свиток телепорта в ближайший магазин (T)">⌖ <b>0</b></span>
+      <span class="chip apple off" id="chipApple" title="Яблоко-приманка: E — оставить в комнате (монстр съест и заснёт)">◉ <b>0</b></span>
+      <span class="sep"></span>
+      <span class="lbl">КЛЮЧИ</span>
+      <span class="keyslot" id="k0"></span>
+      <span class="keyslot" id="k1"></span>
+      <span class="keyslot" id="k2"></span>
+      <span class="sep"></span>
+      <span class="lbl">СЪЕДЕНО ЗВЁЗД</span><b id="caught" style="color:#e8eef5">0</b>
+    </div>
+    <canvas id="game" width="800" height="800"></canvas>
+    <div id="info">
+      <span class="stat">Комната <b id="pos">–</b></span>
+      <span class="stat">Зона <b id="zone">–</b></span>
+      <span class="stat">Открыто <b id="explored">0</b></span>
+      <span id="msg"></span>
+    </div>
+    <div id="hint">Стрелки / WASD или клик · M — карта · L — свет · G — граната · T — свиток · E — яблоко · P — пауза · F2 — отладка</div>
+  </div>
+
+</div>
+
+<div id="pauseOverlay"><div id="pauseBox">
+  <h4>ПАУЗА</h4>
+  <p id="pauseInfo"></p>
+  <p style="font-size:11px;color:#6f7887;margin-top:6px">Время замерло. Сохранение — в хранилище браузера.</p>
+  <div class="row">
+    <button id="pauseResume" class="on" style="flex:1">Продолжить (P)</button>
+    <button id="pauseSave" style="flex:1">Сохранить</button>
+  </div>
+  <div class="row">
+    <button id="pauseQuit" class="danger" style="flex:1">Выйти без сохранения</button>
+  </div>
+</div></div>
+
+<div id="modal"><div id="modalBox">
+  <h4 id="modalTitle">Заголовок</h4>
+  <p id="modalText">Текст</p>
+  <div class="row" style="justify-content:flex-end">
+    <button id="modalNo">Отмена</button>
+    <button id="modalYes" class="on">Хорошо</button>
+  </div>
+</div></div>
+
+<!-- ============================================================
+     Порядок подключения важен: сначала данные и утилиты,
+     затем генерация мира, состояние, игровые системы,
+     затем отрисовка, и в самом конце main.js — UI, ввод и цикл.
+     ============================================================ -->
+
+<!-- данные и настройки -->
+<script src="js/config.js"></script>
+<script src="js/utils.js"></script>
+
+<!-- мир -->
+<script src="js/maze.js"></script>
+<script src="js/state.js"></script>
+
+<!-- игровые системы -->
+<script src="js/player.js"></script>
+<script src="js/items.js"></script>
+<script src="js/monsters.js"></script>
+<script src="js/shop.js"></script>
+
+<!-- отрисовка -->
+<script src="js/rooms.js"></script>
+<script src="js/render.js"></script>
+<script src="js/draw-rooms.js"></script>
+<script src="js/draw-items.js"></script>
+<script src="js/draw-monsters.js"></script>
+<script src="js/overlay.js"></script>
+<script src="js/minimap.js"></script>
+
+<!-- служебное -->
+<script src="js/modal.js"></script>
+<script src="js/save.js"></script>
+
+<!-- запуск -->
+<script src="js/main.js"></script>
+</body>
+</html>
