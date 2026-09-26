@@ -14,6 +14,7 @@ function newGame(diffKey,seed){
   patternCache.clear(); doorAnims.clear();
   visited.clear(); seen.clear();
   grenades=[]; explosions=[]; teleFx=null; zaps=[];
+  Snd.reset();
   queuedMove=null; heldDirs.length=0;
   gameWon=false; gameOver=false; gameOverText='ВАС СЪЕЛИ'; move=null; unlocking=null;
   visual.offsetX=0; visual.offsetY=0;
@@ -34,7 +35,7 @@ function newGame(diffKey,seed){
   flashMessage(`${MAP.w}×${MAP.h} · монстров ${monsters.length} · замков ${MAP.locks.size} · путь ${MAP.pathLen}`);
 }
 
-function onWin(){ if (!gameWon){ gameWon=true; flashMessage('Вы нашли выход!'); } }
+function onWin(){ if (!gameWon){ gameWon=true; flashMessage('Вы нашли выход!'); Snd.play('win'); } }
 
 const canvasPoint=e=>{
   const rect=canvas.getBoundingClientRect();
@@ -223,8 +224,15 @@ function inputFocused(){
   const t=e=>e&&(e.tagName==='INPUT'||e.tagName==='SELECT'||e.tagName==='TEXTAREA'||e.isContentEditable);
   return t(document.activeElement);
 }
+// Браузеры запрещают звук до действия пользователя — поднимаем контекст
+// на первом же клике или нажатии клавиши.
+function wakeAudio(){ Snd.resume(); }
+document.addEventListener('pointerdown',wakeAudio);
+document.addEventListener('keydown',wakeAudio);
+
 document.addEventListener('keydown',(e)=>{
   if (inputFocused()) return;             // не мешать вводу в полях (сид и пр.)
+  if (e.code==='KeyN'&&!e.repeat){ e.preventDefault(); toggleSound(); return; }
   if (e.code==='KeyP'&&!e.repeat){ e.preventDefault(); togglePause(); return; }
   if (paused) return;                     // на паузе клавиши игрока глухи
   if (modal.classList.contains('show')) return;
@@ -276,6 +284,55 @@ function flashMessage(text){
 // ============================================================
 newGame('normal');
 
+// ---------- ЗВУК: кнопки и сохранение настроек ----------
+const sndBtn=document.getElementById('sndBtn');
+const musBtn=document.getElementById('musBtn');
+const volSlider=document.getElementById('volSlider');
+
+function saveSndPrefs(){
+  try{
+    localStorage.setItem('labirint.snd', JSON.stringify({
+      on:Snd.enabled, music:Snd.musicOn, vol:Snd.getVolume(),
+    }));
+  }catch(e){}
+}
+function loadSndPrefs(){
+  let p=null;
+  try{ p=JSON.parse(localStorage.getItem('labirint.snd')||'null'); }catch(e){}
+  if (p){
+    if (typeof p.vol==='number') Snd.setVolume(p.vol);
+    Snd.setEnabled(p.on!==false);
+    Snd.setMusic(p.music!==false);
+  }
+  syncSndUi();
+}
+function syncSndUi(){
+  if (sndBtn){
+    sndBtn.textContent='Звук: '+(Snd.enabled?'вкл':'выкл')+' (N)';
+    sndBtn.classList.toggle('on',Snd.enabled);
+  }
+  if (musBtn){
+    musBtn.textContent='Музыка: '+(Snd.musicOn?'вкл':'выкл');
+    musBtn.classList.toggle('on',Snd.musicOn);
+  }
+  if (volSlider) volSlider.value=Math.round(Snd.getVolume()*100);
+}
+function toggleSound(){
+  Snd.resume();
+  Snd.setEnabled(!Snd.enabled);
+  if (Snd.enabled) Snd.play('ui');
+  syncSndUi(); saveSndPrefs();
+  flashMessage(Snd.enabled?'Звук включён':'Звук выключен');
+}
+if (sndBtn) sndBtn.addEventListener('click',toggleSound);
+if (musBtn) musBtn.addEventListener('click',()=>{
+  Snd.resume(); Snd.setMusic(!Snd.musicOn); syncSndUi(); saveSndPrefs();
+});
+if (volSlider) volSlider.addEventListener('input',()=>{
+  Snd.resume(); Snd.setVolume(volSlider.value/100); saveSndPrefs();
+});
+loadSndPrefs();
+
 let lastTime=performance.now();
 function loop(now){
   const dt=Math.min((now-lastTime)/1000,0.05);
@@ -287,11 +344,28 @@ function loop(now){
   camX=roomCX(player.x)+visual.offsetX;
   camY=roomCY(player.y)+visual.offsetY;
 
-  for (const m of monsters) updateMonster(m,dt);
+  for (const m of monsters){
+    const wasChasing=(m.state==='chase');
+    updateMonster(m,dt);
+    // РЫК при переходе в погоню — одна точка на все ветки ИИ
+    if (!wasChasing&&m.state==='chase'&&m.stun<=0&&!m.dead)
+      Snd.at(m.cfg.boss?'roar':'alert',m.x,m.y);
+  }
   purgeDead();
   resolveOverlaps();
   updateDoors(dt);
   updateGrenades(dt);
+
+  // НАПРЯЖЁННОСТЬ МУЗЫКИ: считаем, кто из монстров гонится и как близко
+  let tens=0;
+  for (const m of monsters){
+    if (m.dead||m.state!=='chase'||m.stun>0) continue;
+    const d=Math.max(Math.abs(m.room.x-player.x),Math.abs(m.room.y-player.y));
+    if (d>3) continue;
+    tens=Math.max(tens,(m.cfg.boss?1:0.75)*(1-d/4));
+  }
+  Snd.setTension(gameOver||gameWon?0:tens);
+  Snd.update(dt);
 
   render(now/1000);
 
