@@ -23,18 +23,19 @@ function pickUp(rx,ry){
   if (it.type==='apple'&&it.dropped){ return; }
   MAP.items.delete(k);
   if (it.type==='star'){
-    inv.stars++; flashMessage('Звезда защиты +1');
+    inv.stars++; flashMessage('Звезда защиты +1'); Snd.play('star');
   } else if (it.type==='coin'){
-    inv.coins+=it.value; flashMessage(`Деньги +${it.value}`);
+    inv.coins+=it.value; flashMessage(`Деньги +${it.value}`); Snd.play('coin');
   } else if (it.type==='grenade'){
-    inv.grenades++; flashMessage('Граната +1');
+    inv.grenades++; flashMessage('Граната +1'); Snd.play('pickup');
     maybeGrenadeInfo();
   } else if (it.type==='apple'){
     inv.apples++;
     flashMessage('Яблоко +1 (E — оставить в комнате как приманку)');
+    Snd.play('pickup',{v:0.8});
   } else if (it.type==='key'){
     inv.keys[it.color]=true;
-    flashMessage(`Найден ${KEY_DEFS[it.color].name} ключ`);
+    flashMessage(`Найден ${KEY_DEFS[it.color].name} ключ`); Snd.play('key');
   }
   updateHud();
 }
@@ -104,7 +105,9 @@ function startMove(dir){
   }
 
   requestDoorOpen(key,SWING_BY_DIR[dir],'player');
+  Snd.play('doorOpen');
   move={dir,key,phase:'opening',progress:0};
+  stepPhase=0;                    // начать отсчёт шагов заново
 }
 
 function updateUnlock(dt){
@@ -117,23 +120,33 @@ function updateUnlock(dt){
     MAP.rooms[ny][nx][DIR[p.dir].opp]='closed';
     MAP.locks.delete(unlocking.key);
     const dir=unlocking.dir;
-    flashMessage('Замок открыт');
+    flashMessage('Замок открыт'); Snd.play('unlock');
     unlocking=null;
     mapDirty=true;
     startMove(dir);
   }
 }
 
+const STEP_DIST=46;          // пройденное расстояние между шагами игрока, px
+let stepPhase=0;
 function updatePlayer(dt){
   if (!move) return;
   if (move.phase==='opening'){
     if (doorPassable(move.key)){ move.phase='moving'; move.progress=0; }
     return;
   }
+  const prevE=easeInOut(Math.min(move.progress/T_MOVE,1));
   move.progress+=dt;
   const t=Math.min(move.progress/T_MOVE,1), e=easeInOut(t);
   visual.offsetX=DIR[move.dir].dx*ROOM_SIZE*e;
   visual.offsetY=DIR[move.dir].dy*ROOM_SIZE*e;
+  // ШАГИ: фаза растёт от реально пройденного расстояния, поэтому темп
+  // совпадает с анимацией и не плывёт при смене частоты кадров
+  stepPhase+=(e-prevE)*ROOM_SIZE;
+  if (stepPhase>=STEP_DIST){
+    stepPhase-=STEP_DIST;
+    Snd.play('step',{v:0.85+Math.random()*0.3});
+  }
   if (t>=1){
     player.x+=DIR[move.dir].dx; player.y+=DIR[move.dir].dy;
     visual.offsetX=0; visual.offsetY=0;
